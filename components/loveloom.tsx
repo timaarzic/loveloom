@@ -51,11 +51,16 @@ import {
   Mail,
   Download,
   Info,
+  Mic,
+  Paperclip,
+  Palette,
+  Square,
 } from "lucide-react";
 import type { Snapshot, Entry, EntryKind, Message, Game } from "@/lib/types";
 import { asset } from "@/lib/assets";
 import { previewApi, previewScreen } from "@/lib/preview";
 import { cloudApi, onCloudAuthChange } from "@/lib/cloud";
+import MomentsHub, { MediaBubble } from "@/components/moments";
 type Tab = "home" | "chat" | "together" | "games" | "settings";
 type Modal =
   | "create"
@@ -71,7 +76,18 @@ type Modal =
   | "story"
   | "call"
   | "progress"
+  | "email"
+  | "wallpaper"
   | null;
+
+const wallpapers = [
+  { id: "rose-mist", name: "Розовый туман", color: "#f4d8df" },
+  { id: "lavender-dusk", name: "Лавандовый вечер", color: "#ddd8f3" },
+  { id: "sky-linen", name: "Небесный лён", color: "#d7e8f2" },
+  { id: "mint-paper", name: "Мятная бумага", color: "#dcebdd" },
+  { id: "peach-glow", name: "Персиковый свет", color: "#f4ddcc" },
+] as const;
+type Wallpaper = (typeof wallpapers)[number]["id"];
 const widgetNames = {
   story: "Наша история",
   event: "Ближайшее событие",
@@ -118,7 +134,7 @@ const nav = [
   { id: "home", name: "Главная", Icon: Home },
   { id: "chat", name: "Чат", Icon: MessageCircle },
   { id: "together", name: "Вместе", Icon: BookHeart },
-  { id: "games", name: "Игры", Icon: Gamepad2 },
+  { id: "games", name: "Для двоих", Icon: Gamepad2 },
   { id: "settings", name: "Настройки", Icon: Settings },
 ] as const;
 function today(zone = "Europe/Moscow") {
@@ -263,6 +279,9 @@ export default function LoveLoom({
     [auth, setAuth] = useState<"login" | "register">("login"),
     [busy, setBusy] = useState(false),
     [toast, setToast] = useState("");
+  const [pendingEmail, setPendingEmail] = useState(""),
+    [wallpaper, setWallpaper] = useState<Wallpaper>("rose-mist"),
+    [recording, setRecording] = useState(false);
   const [roomCode, setRoomCode] = useState(""),
     [reveal, setReveal] = useState(false),
     [entry, setEntry] = useState<Entry | null>(null);
@@ -286,7 +305,11 @@ export default function LoveLoom({
     chatBottom = useRef<HTMLDivElement>(null),
     scrollBox = useRef<HTMLDivElement>(null),
     stick = useRef(true),
-    toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null),
+    chatMediaInput = useRef<HTMLInputElement>(null),
+    recorder = useRef<MediaRecorder | null>(null),
+    voiceChunks = useRef<Blob[]>([]),
+    voiceStream = useRef<MediaStream | null>(null);
   snapshot.current = s;
   useEffect(() => {
     document.body.classList.toggle("preview-mode", preview);
@@ -393,6 +416,42 @@ export default function LoveLoom({
     return onCloudAuthChange(() => void refresh());
   }, [cloud, refresh]);
   useEffect(() => {
+    const roomId = s.room?.id;
+    if (!roomId) {
+      setWallpaper("rose-mist");
+      return;
+    }
+    const saved = localStorage.getItem(`loveloom-wallpaper:${roomId}`);
+    const valid = wallpapers.some((item) => item.id === saved);
+    setWallpaper(valid ? (saved as Wallpaper) : "rose-mist");
+  }, [s.room?.id]);
+  useEffect(
+    () => () => {
+      const active = recorder.current;
+      if (active && active.state !== "inactive") {
+        active.onstop = null;
+        active.stop();
+      }
+      voiceStream.current?.getTracks().forEach((track) => track.stop());
+    },
+    [],
+  );
+  useEffect(() => {
+    if (tab === "chat" && s.user) return;
+    const active = recorder.current;
+    const stream = voiceStream.current;
+    if (!active && !stream) return;
+    if (active && active.state !== "inactive") {
+      active.onstop = null;
+      active.stop();
+    }
+    stream?.getTracks().forEach((track) => track.stop());
+    recorder.current = null;
+    voiceStream.current = null;
+    voiceChunks.current = [];
+    setRecording(false);
+  }, [tab, s.user?.id]);
+  useEffect(() => {
     if (!s.user) return;
     const beat = () => {
       if (document.visibilityState === "visible")
@@ -498,16 +557,18 @@ export default function LoveLoom({
   async function authSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const f = new FormData(e.currentTarget);
+    const email = String(f.get("email") || "").trim().toLowerCase();
     await act(async () => {
       const result = await api(`auth/${auth}`, {
         name: f.get("name"),
-        email: f.get("email"),
+        email,
         password: f.get("password"),
         ageConfirmed: f.get("age") === "on",
       });
       if (auth === "register" && result?.needsConfirmation) {
+        setPendingEmail(email);
         setAuth("login");
-        tell("Аккаунт создан. Откройте письмо и подтвердите почту, затем войдите.");
+        setModal("email");
         return;
       }
       await refresh();
@@ -563,6 +624,89 @@ export default function LoveLoom({
     localStorage.setItem("loveloom-hidden-widgets", JSON.stringify(next));
   }
 
+  function chooseWallpaper(next: Wallpaper) {
+    if (!room) return;
+    setWallpaper(next);
+    localStorage.setItem(`loveloom-wallpaper:${room.id}`, next);
+    tell("Обои изменены на этом устройстве.");
+  }
+
+  async function uploadChatFile(file: File | null) {
+    if (!file || !room || !user) return;
+    if (!cloud) {
+      tell("Медиа доступны в облачной beta-версии.");
+      return;
+    }
+    await act(async () => {
+      await api("media", {
+        file,
+        context: "chat",
+        roomId: room.id,
+        authorId: user.id,
+        epoch: room.epoch,
+      });
+      stick.current = true;
+      await fetchMessages();
+      tell(file.type.startsWith("audio/") ? "Голосовое сообщение отправлено." : "Файл отправлен.");
+    });
+  }
+
+  async function toggleVoiceRecording() {
+    if (recording) {
+      recorder.current?.stop();
+      return;
+    }
+    if (!cloud) {
+      tell("Голосовые сообщения доступны в облачной beta-версии.");
+      return;
+    }
+    if (!("MediaRecorder" in window) || !navigator.mediaDevices?.getUserMedia) {
+      tell("Этот браузер не поддерживает запись голосовых сообщений.");
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      voiceStream.current = stream;
+      const preferred = [
+        "audio/webm;codecs=opus",
+        "audio/mp4",
+        "audio/webm",
+      ].find((mime) => MediaRecorder.isTypeSupported(mime));
+      const nextRecorder = new MediaRecorder(
+        stream,
+        preferred ? { mimeType: preferred } : undefined,
+      );
+      voiceChunks.current = [];
+      nextRecorder.ondataavailable = (event) => {
+        if (event.data.size) voiceChunks.current.push(event.data);
+      };
+      nextRecorder.onstop = () => {
+        setRecording(false);
+        stream.getTracks().forEach((track) => track.stop());
+        voiceStream.current = null;
+        recorder.current = null;
+        const type = nextRecorder.mimeType || preferred || "audio/webm";
+        const extension = type.startsWith("audio/mp4") ? "m4a" : "webm";
+        const blob = new Blob(voiceChunks.current, { type });
+        voiceChunks.current = [];
+        if (!blob.size) {
+          tell("Запись получилась пустой. Попробуйте ещё раз.");
+          return;
+        }
+        const file = new File([blob], `voice-${Date.now()}.${extension}`, {
+          type,
+        });
+        void uploadChatFile(file);
+      };
+      recorder.current = nextRecorder;
+      nextRecorder.start(500);
+      setRecording(true);
+      tell("Запись началась. Нажмите квадрат, чтобы отправить.");
+    } catch {
+      tell("Не удалось получить доступ к микрофону.");
+    }
+  }
+
   if (loading)
     return (
       <div className="loading-screen">
@@ -591,7 +735,7 @@ export default function LoveLoom({
     <>
       {preview && (
         <div className="beta-bar" aria-label="Панель дизайн-беты">
-          <strong>LoveLoom · sketch beta 0.2</strong>
+          <strong>LoveLoom · sketch beta 0.4</strong>
           <span className="beta-description">
             Вымышленные данные · изменения только в этом браузере
           </span>
@@ -866,7 +1010,7 @@ export default function LoveLoom({
           </footer>
         </main>
       ) : (
-        <div className="app-shell">
+        <div className={`app-shell wallpaper-${wallpaper}`}>
           <aside className="sidebar">
             <Logo />
             <div className="sidebar-caption">ВАШЕ ПРОСТРАНСТВО</div>
@@ -1427,7 +1571,8 @@ export default function LoveLoom({
                             </span>
                           )}
                           <div className="message">
-                            <p>{m.text}</p>
+                            {m.media && <MediaBubble media={m.media} />}
+                            {m.text && !m.media && <p>{m.text}</p>}
                             <time>
                               {new Intl.DateTimeFormat("ru", {
                                 timeZone: room.timezone,
@@ -1456,6 +1601,45 @@ export default function LoveLoom({
                       });
                     }}
                   >
+                    <input
+                      ref={chatMediaInput}
+                      hidden
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp,image/gif,image/avif,video/mp4,video/webm,video/quicktime"
+                      onChange={(event) => {
+                        const file = event.target.files?.[0] || null;
+                        event.currentTarget.value = "";
+                        void uploadChatFile(file);
+                      }}
+                    />
+                    <div className="compose-tools">
+                      <button
+                        type="button"
+                        className="compose-tool"
+                        disabled={busy || offline || recording}
+                        onClick={() => chatMediaInput.current?.click()}
+                        aria-label="Прикрепить фотографию или видео"
+                      >
+                        <Paperclip size={19} />
+                      </button>
+                      <button
+                        type="button"
+                        className={`compose-tool voice-tool ${recording ? "is-recording" : ""}`}
+                        disabled={busy || offline}
+                        onClick={() => void toggleVoiceRecording()}
+                        aria-label={
+                          recording
+                            ? "Остановить и отправить запись"
+                            : "Записать голосовое сообщение"
+                        }
+                      >
+                        {recording ? (
+                          <Square size={16} fill="currentColor" />
+                        ) : (
+                          <Mic size={19} />
+                        )}
+                      </button>
+                    </div>
                     <textarea
                       value={messageText}
                       onChange={(e) => setMessageText(e.target.value)}
@@ -1480,7 +1664,7 @@ export default function LoveLoom({
                   </form>
                   <p className="chat-footnote">
                     <LockKeyhole size={12} />
-                    Текстовый чат · фото, видео и звонки — на следующем этапе
+                    Текст, фото, видео и голосовые · звонки пока не подключены
                   </p>
                 </>
               )}
@@ -1632,7 +1816,16 @@ export default function LoveLoom({
               )}
               {tab === "games" && (
                 <>
-                  <div className="page-heading">
+                  <MomentsHub
+                    api={api}
+                    room={room}
+                    user={user}
+                    partnerName={partnerName}
+                    hasPartner={Boolean(partner)}
+                    cloud={cloud}
+                    tell={tell}
+                  />
+                  <div className="page-heading games-heading">
                     <div>
                       <div className="eyebrow">ВРЕМЯ ДЛЯ ВАС</div>
                       <h1>
@@ -1942,6 +2135,21 @@ export default function LoveLoom({
                       </div>
                       <div className="setting-row">
                         <div>
+                          <strong>Обои комнаты</strong>
+                          <p>
+                            {wallpapers.find((item) => item.id === wallpaper)?.name}
+                          </p>
+                        </div>
+                        <button
+                          className="button secondary small"
+                          onClick={() => setModal("wallpaper")}
+                        >
+                          <Palette size={16} />
+                          Выбрать
+                        </button>
+                      </div>
+                      <div className="setting-row">
+                        <div>
                           <strong>Пароль комнаты</strong>
                           <p>Передавайте только вашему человеку</p>
                         </div>
@@ -1982,9 +2190,9 @@ export default function LoveLoom({
                       <div className="setting-row">
                         <div>
                           <strong>Медиахранилище</strong>
-                          <p>Загрузка фото и видео — следующий этап</p>
+                          <p>Закрытый облачный альбом и файлы чата</p>
                         </div>
-                        <span className="soon-tag">Позже</span>
+                        <span className="soon-tag is-ready">Готово</span>
                       </div>
                       <div className="setting-row">
                         <div>
@@ -2055,6 +2263,8 @@ export default function LoveLoom({
               story: "Наша история — по дням",
               call: "Побыть рядом",
               progress: "LoveLoom · что уже готово",
+              email: "Подтвердите почту",
+              wallpaper: "Обои вашего пространства",
             }[modal]
           }
           onClose={() => {
@@ -2064,6 +2274,73 @@ export default function LoveLoom({
             }
           }}
         >
+          {modal === "email" && (
+            <div className="form-stack email-confirmation">
+              <span className="confirmation-orbit">
+                <Mail size={32} />
+              </span>
+              <h3>Письмо уже в пути</h3>
+              <p>
+                Мы отправили ссылку подтверждения на{" "}
+                <strong>{pendingEmail}</strong>. Откройте её на этом устройстве,
+                затем войдите в LoveLoom.
+              </p>
+              <div className="inline-notice">
+                <ShieldCheck size={20} />
+                <span>
+                  Если письма нет, проверьте папку «Спам» и правильность адреса.
+                </span>
+              </div>
+              <button
+                className="button full"
+                disabled={busy || !pendingEmail || !cloud}
+                onClick={() =>
+                  void act(async () => {
+                    await api("auth/resend", { email: pendingEmail });
+                    tell("Новое письмо отправлено.");
+                  })
+                }
+              >
+                <Mail size={18} />
+                Отправить письмо ещё раз
+              </button>
+              <button
+                className="button secondary full"
+                onClick={() => setModal(null)}
+              >
+                Перейти ко входу
+              </button>
+            </div>
+          )}
+          {modal === "wallpaper" && (
+            <div className="form-stack">
+              <p className="muted">
+                Нежный фон сохранится для этой комнаты на текущем устройстве.
+              </p>
+              <div className="wallpaper-options">
+                {wallpapers.map((item) => (
+                  <button
+                    key={item.id}
+                    className={`wallpaper-option wallpaper-preview-${item.id} ${wallpaper === item.id ? "is-selected" : ""}`}
+                    onClick={() => chooseWallpaper(item.id)}
+                  >
+                    <span
+                      className="wallpaper-swatch"
+                      style={{ backgroundColor: item.color }}
+                    >
+                      <Heart size={21} fill="currentColor" />
+                    </span>
+                    <strong>{item.name}</strong>
+                    {wallpaper === item.id && <Check size={18} />}
+                  </button>
+                ))}
+              </div>
+              <button className="button full" onClick={() => setModal(null)}>
+                <Check size={18} />
+                Готово
+              </button>
+            </div>
+          )}
           {modal === "widgets" && (
             <div className="form-stack">
               <p className="muted">
@@ -2166,7 +2443,9 @@ export default function LoveLoom({
           )}
           {(modal === "progress" || modal === "about") && (
             <div className="form-stack">
-              <p className="handwritten-note">Блокнот для двоих. Версия 0.2.</p>
+              <p className="handwritten-note">
+                Блокнот для двоих. Версия 0.4 beta.
+              </p>
               <p>
                 {preview
                   ? "Это интерактивная дизайн-бета. Можно менять записи, открывать виджеты и примерять обе роли. Настоящей регистрации, общей базы и связи между устройствами здесь нет."
@@ -2179,11 +2458,12 @@ export default function LoveLoom({
                   <strong>{cloud ? "Работает в облаке" : "Можно попробовать"}</strong>
                   Регистрация, постоянный вход, комнаты для двоих, чат,
                   календарь, заметки, желания, фильмы, музыка, расстояние и
-                  четыре мини-игры.
+                  четыре мини-игры. Добавлены фото, видео, голосовые сообщения,
+                  общий альбом, капсулы времени, сад и тактильный сигнал.
                 </li>
                 <li>
                   <strong>Следующий этап</strong>Восстановление доступа,
-                  фотографии, видео и голосовые сообщения.
+                  push-уведомления и окончательная настройка фирменной почты.
                 </li>
                 <li>
                   <strong>После подключения связи</strong>Аудио- и видеозвонки в
@@ -2399,8 +2679,7 @@ export default function LoveLoom({
               </label>
               {section === "memory" && (
                 <p className="local-note">
-                  Сейчас воспоминания текстовые. Добавление фотографий будет
-                  следующим этапом.
+                  Фотографии можно хранить в общем альбоме раздела «Для двоих».
                 </p>
               )}
               <div className="row">

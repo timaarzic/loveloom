@@ -2870,3 +2870,715 @@ body {
     font-size: 25px;
   }
 }
+
+/* LoveLoom 0.4 · shared moments, media and room wallpapers */
+.app-shell {
+  --wallpaper-wash: linear-gradient(145deg, #f9eef1 0%, #fbf8f5 45%, #f4e7e2 100%);
+}
+.app-shell.wallpaper-rose-mist {
+  --wallpaper-wash:
+    radial-gradient(circle at 88% 12%, #efcbd59c 0 10%, transparent 34%),
+    radial-gradient(circle at 12% 76%, #f4ddd6a6 0 12%, transparent 35%),
+    linear-gradient(145deg, #fcf6f7 0%, #faf7f3 54%, #f5e7e8 100%);
+}
+.app-shell.wallpaper-lavender-dusk {
+  --wallpaper-wash:
+    radial-gradient(circle at 90% 9%, #d9cff09e 0 11%, transparent 34%),
+    radial-gradient(circle at 11% 80%, #ead9eaa8 0 12%, transparent 36%),
+    linear-gradient(145deg, #faf7fc 0%, #f8f5f7 53%, #eee8f7 100%);
+}
+.app-shell.wallpaper-sky-linen {
+  --wallpaper-wash:
+    radial-gradient(circle at 86% 14%, #cfe6f0a3 0 11%, transparent 34%),
+    radial-gradient(circle at 10% 78%, #dde8efa6 0 13%, transparent 36%),
+    linear-gradient(145deg, #f6fafc 0%, #faf8f4 54%, #e7f0f4 100%);
+}
+.app-shell.wallpaper-mint-paper {
+  --wallpaper-wash:
+    radial-gradient(circle at 87% 12%, #d2e8d6a3 0 11%, transparent 34%),
+    radial-gradient(circle at 12% 80%, #e4ebd2a8 0 13%, transparent 36%),
+    linear-gradient(145deg, #f8fbf7 0%, #faf8f4 54%, #e9f1e6 100%);
+}
+.app-shell.wallpaper-peach-glow {
+  --wallpaper-wash:
+    radial-gradient(circle at 88% 12%, #f2d4bca8 0 11%, transparent 34%),
+    radial-gradient(circle at 10% 78%, #f0ddddb0 0 13%, transparent 36%),
+    linear-gradient(145deg, #fdf8f3 0%, #faf7f4 54%, #f7e7dc 100%);
+}
+.app-shell .app-main {
+  min-height: 100dvh;
+  background: var(--wallpaper-wash);
+  background-attachment: fixed;
+}
+.app-shell .topbar {
+  background: color-mix(in srgb, var(--bg) 82%, transparent);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+:root[data-theme="dark"] .app-shell {
+  --wallpaper-wash:
+    radial-gradient(circle at 88% 12%, #5e34406b, transparent 34%),
+    radial-gradient(circle at 12% 80%, #4c35486b, transparent 36%),
+    var(--bg);
+}
+:root[data-theme="dark"] .app-shell.wallpaper-lavender-dusk {
+  --wallpaper-wash:
+    radial-gradient(circle at 88% 12%, #5142658a, transparent 34%),
+    radial-gradient(circle at 12% 80%, #49394d7a, transparent 36%),
+    var(--bg);
+}
+:root[data-theme="dark"] .app-shell.wallpaper-sky-linen {
+  --wallpaper-wash:
+    radial-gradient(circle at 88% 12%, #2e4e5e78, transparent 34%),
+    radial-gradient(circle at 12% 80%, #35444d73, transparent 36%),
+    var(--bg);
+}
+:root[data-theme="dark"] .app-shell.wallpaper-mint-paper {
+  --wallpaper-wash:
+    radial-gradient(circle at 88% 12%, #344f3b78, transparent 34%),
+    radial-gradient(circle at 12% 80%, #404a3370, transparent 36%),
+    var(--bg);
+}
+:root[data-theme="dark"] .app-shell.wallpaper-peach-glow {
+  --wallpaper-wash:
+    radial-gradient(circle at 88% 12%, #62453578, transparent 34%),
+    radial-gradient(circle at 12% 80%, #5b383e70, transparent 36%),
+    var(--bg);
+}
+
+.button:not(.danger),
+.choice-card,
+.game-card,
+.compose-tool,
+.wallpaper-option,
+.tactile-heart {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+}
+.button:not(.danger)::after,
+.choice-card::after,
+.game-card::after {
+  content: "";
+  position: absolute;
+  inset: -80% auto -80% -45%;
+  width: 34%;
+  z-index: -1;
+  opacity: 0;
+  transform: rotate(18deg);
+  background: linear-gradient(90deg, transparent, #ffffff52, transparent);
+  transition: left 0.55s ease, opacity 0.25s ease;
+}
+.button:not(.danger):hover::after,
+.choice-card:hover::after,
+.game-card:hover::after {
+  left: 120%;
+  opacity: 1;
+}
+.choice-card:hover,
+.game-card:hover {
+  transform: translateY(-3px) rotate(-0.15deg);
+  box-shadow: 0 18px 48px #6d465014;
+}
+
+/* Chat attachments and voice notes */
+.compose-tools {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+}
+.compose-tool {
+  width: 38px;
+  height: 38px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--surface2);
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+.compose-tool:hover:not(:disabled) {
+  color: var(--rose);
+  background: var(--blush);
+  transform: translateY(-1px) rotate(-2deg);
+}
+.voice-tool.is-recording {
+  color: #fff;
+  background: var(--rose);
+  animation: voice-pulse 1.2s ease-in-out infinite;
+}
+@keyframes voice-pulse {
+  50% {
+    box-shadow: 0 0 0 7px #b5516a1f;
+    transform: scale(0.96);
+  }
+}
+.message:has(.message-media) {
+  padding: 6px;
+  min-width: min(320px, 72vw);
+}
+.message-media {
+  display: grid;
+  gap: 7px;
+}
+.message-media a {
+  display: block;
+}
+.message-image-frame {
+  display: block;
+  position: relative;
+  width: min(360px, 68vw);
+  aspect-ratio: 4 / 3;
+  overflow: hidden;
+  border-radius: 12px;
+  background: var(--surface2);
+}
+.message-image-frame img {
+  object-fit: cover;
+}
+.message-media video {
+  display: block;
+  width: min(420px, 70vw);
+  max-height: 52vh;
+  border-radius: 12px;
+  background: #1d191b;
+}
+.message-media audio {
+  display: block;
+  width: min(300px, 68vw);
+  height: 44px;
+}
+.message-media .media-caption {
+  padding: 2px 7px;
+  font-size: 13px;
+}
+.media-unavailable {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 13px;
+  padding: 8px;
+}
+
+/* New shared moments */
+.moments-intro {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 22px;
+  margin-bottom: 24px;
+}
+.moments-intro h1 {
+  font-size: 38px;
+  margin-top: 11px;
+}
+.moments-intro p {
+  color: var(--muted);
+  margin-top: 9px;
+}
+.moments-intro .page-illustration {
+  color: var(--rose);
+  opacity: 0.46;
+  transform: rotate(8deg);
+}
+.feature-notice {
+  margin-bottom: 20px;
+}
+.moments-grid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 20px;
+}
+.moments-grid > .card {
+  min-width: 0;
+  padding: 24px;
+  box-shadow: 0 15px 55px #6f4a500a;
+}
+.moments-grid > .card > p {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.7;
+}
+.tactile-card,
+.album-card {
+  grid-column: span 7;
+}
+.garden-card,
+.capsule-card {
+  grid-column: span 5;
+}
+.live-pill {
+  padding: 4px 9px;
+  border-radius: 99px;
+  background: var(--surface2);
+  color: var(--muted);
+  font-size: 10px;
+}
+.live-pill.is-live {
+  color: #4f7b58;
+  background: #e2f0e3;
+}
+:root[data-theme="dark"] .live-pill.is-live {
+  color: #9fd3a8;
+  background: #29412f;
+}
+.tactile-heart {
+  width: min(240px, 78vw);
+  aspect-ratio: 1.55;
+  border: 0;
+  background:
+    radial-gradient(circle at 50% 42%, #fff 0 4%, transparent 5%),
+    linear-gradient(145deg, #f9dce5, #f5c8d6);
+  color: var(--rose);
+  border-radius: 48% 52% 46% 54% / 51% 44% 56% 49%;
+  margin: 23px auto 17px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  align-items: center;
+  justify-content: center;
+  box-shadow: inset 0 0 0 1px #fff8, 0 15px 36px #b5516a1b;
+}
+.tactile-heart small {
+  color: #854459;
+  font-family: "Neucha", var(--sans);
+  font-size: 15px;
+}
+.tactile-heart:hover:not(:disabled) {
+  transform: scale(1.025) rotate(-1deg);
+}
+.tactile-heart.is-sent svg {
+  animation: sent-heart 0.85s ease;
+}
+.heart-rings,
+.heart-rings::before {
+  position: absolute;
+  inset: 24%;
+  content: "";
+  border: 1px solid #b5516a38;
+  border-radius: 50%;
+  animation: gentle-ring 2.6s ease-out infinite;
+}
+.heart-rings::before {
+  inset: -34%;
+  animation-delay: 0.8s;
+}
+@keyframes gentle-ring {
+  0% { transform: scale(0.7); opacity: 0; }
+  25% { opacity: 0.65; }
+  100% { transform: scale(1.7); opacity: 0; }
+}
+@keyframes sent-heart {
+  40% { transform: scale(1.3) rotate(-6deg); }
+  75% { transform: scale(0.9) rotate(3deg); }
+}
+.privacy-note.compact {
+  padding: 4px 0 0;
+  font-size: 10px;
+}
+.tactile-bloom {
+  position: fixed;
+  inset: 0;
+  z-index: 140;
+  pointer-events: none;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  background: radial-gradient(circle, #f8c7d49c 0, #f2afc14d 25%, transparent 70%);
+  animation: bloom-wash 2.55s ease-out forwards;
+}
+.tactile-bloom span {
+  display: grid;
+  place-items: center;
+  width: 150px;
+  aspect-ratio: 1;
+  color: #cf6982;
+  border-radius: 50%;
+  background: #fff8;
+  box-shadow: 0 0 90px #e6819c88;
+  animation: bloom-heart 2.2s cubic-bezier(0.2, 0.75, 0.25, 1) forwards;
+}
+.tactile-bloom span svg {
+  width: 78px;
+  height: 78px;
+}
+.tactile-bloom i {
+  position: absolute;
+  width: 28px;
+  height: 28px;
+  border-radius: 48% 52% 46% 54%;
+  background: #f3a8bc82;
+  filter: blur(1px);
+  animation: bloom-petal 2.3s ease-out forwards;
+}
+.tactile-bloom i:nth-of-type(1) { transform: translate(-110px, -55px); }
+.tactile-bloom i:nth-of-type(2) { transform: translate(120px, 30px); animation-delay: 0.08s; }
+.tactile-bloom i:nth-of-type(3) { transform: translate(-55px, 120px); animation-delay: 0.15s; }
+@keyframes bloom-wash {
+  0% { opacity: 0; }
+  20% { opacity: 1; }
+  100% { opacity: 0; }
+}
+@keyframes bloom-heart {
+  0% { opacity: 0; transform: scale(0.28) rotate(-10deg); }
+  30% { opacity: 1; transform: scale(1.05) rotate(2deg); }
+  100% { opacity: 0; transform: scale(1.55) rotate(0); }
+}
+@keyframes bloom-petal {
+  0% { opacity: 0; margin: 0; }
+  30% { opacity: 0.9; }
+  100% { opacity: 0; margin-top: -130px; transform: rotate(120deg) scale(1.6); }
+}
+
+.garden-visual {
+  position: relative;
+  height: 155px;
+  overflow: hidden;
+  margin: 18px 0 14px;
+  border-radius: 45% 55% 18px 18px / 42% 46% 18px 18px;
+  background: linear-gradient(#eff6ef 0 64%, #e5dfcc 64%);
+}
+:root[data-theme="dark"] .garden-visual {
+  background: linear-gradient(#2b3b35 0 64%, #403a31 64%);
+}
+.garden-ground {
+  position: absolute;
+  left: 8%;
+  right: 8%;
+  bottom: 15px;
+  height: 25px;
+  border-radius: 50%;
+  background: #b7c798;
+  opacity: 0.7;
+}
+.garden-visual .plant {
+  position: absolute;
+  color: #729067;
+  bottom: 27px;
+  transform-origin: bottom;
+  animation: plant-grow 0.75s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.plant-one { width: 62px; height: 62px; left: 20%; }
+.plant-two { width: 49px; height: 49px; right: 21%; animation-delay: 0.08s !important; }
+.flower-one { width: 46px; height: 46px; left: 47%; color: #c57a92 !important; }
+.flower-two { width: 39px; height: 39px; left: 31%; color: #d39a67 !important; }
+.flower-three { width: 43px; height: 43px; right: 30%; color: #9985bc !important; }
+.garden-sparkles {
+  position: absolute;
+  right: 12%;
+  top: 16%;
+  color: #d7a34f;
+  animation: soft-twinkle 1.7s ease-in-out infinite;
+}
+@keyframes plant-grow {
+  from { transform: scale(0) rotate(-9deg); opacity: 0; }
+  to { transform: scale(1) rotate(0); opacity: 1; }
+}
+@keyframes soft-twinkle {
+  50% { transform: scale(1.15) rotate(8deg); opacity: 0.55; }
+}
+.garden-card h3 {
+  font-family: var(--serif);
+  margin-bottom: 6px;
+}
+.garden-water {
+  margin-top: 17px;
+}
+
+.album-upload {
+  margin: 17px 0;
+}
+.album-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.album-photo {
+  position: relative;
+  aspect-ratio: 1;
+  overflow: hidden;
+  border-radius: 13px;
+  background: var(--surface2);
+  color: #fff;
+  content-visibility: auto;
+  contain-intrinsic-size: 180px 180px;
+}
+.album-photo img {
+  object-fit: cover;
+  transition: transform 0.45s ease;
+}
+.album-photo:hover img {
+  transform: scale(1.045);
+}
+.album-photo > span {
+  position: absolute;
+  z-index: 2;
+  right: 6px;
+  bottom: 6px;
+  padding: 2px 6px;
+  border-radius: 8px;
+  background: #2d20267d;
+  backdrop-filter: blur(5px);
+  font-size: 9px;
+}
+.album-empty,
+.feature-loader {
+  min-height: 145px;
+  border: 1px dashed var(--line);
+  border-radius: 15px;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 9px;
+  text-align: center;
+  font-size: 12px;
+  padding: 18px;
+}
+
+.capsule-form {
+  display: grid;
+  gap: 12px;
+  margin-top: 17px;
+}
+.capsule-form label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.capsule-form input,
+.capsule-form textarea {
+  border: 1px solid var(--line);
+  background: var(--surface2);
+  color: var(--text);
+  border-radius: 11px;
+  padding: 10px 12px;
+  resize: vertical;
+}
+.capsule-list {
+  display: grid;
+  gap: 9px;
+  margin-top: 17px;
+  max-height: 360px;
+  overflow: auto;
+}
+.capsule-item {
+  display: flex;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  background: var(--surface2);
+  border-radius: 13px;
+  content-visibility: auto;
+  contain-intrinsic-size: 68px;
+}
+.capsule-item.is-open {
+  background: var(--blush);
+}
+.capsule-icon {
+  width: 33px;
+  height: 33px;
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--rose);
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+}
+.capsule-item div {
+  min-width: 0;
+}
+.capsule-item strong,
+.capsule-item small {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.capsule-item small {
+  color: var(--muted);
+  margin-top: 3px;
+}
+.capsule-item p {
+  margin-top: 8px;
+  white-space: pre-wrap;
+  font-size: 13px;
+}
+.capsule-empty {
+  color: var(--muted);
+  font-size: 12px;
+}
+.moments-divider {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  margin: 37px 0 28px;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.5px;
+}
+.moments-divider::before,
+.moments-divider::after {
+  content: "";
+  height: 1px;
+  flex: 1;
+  background: var(--line);
+}
+.moments-divider span {
+  display: flex;
+  gap: 7px;
+  align-items: center;
+}
+.games-heading {
+  margin-top: 0;
+}
+
+/* Confirmation and wallpaper picker */
+.email-confirmation {
+  text-align: center;
+}
+.email-confirmation > p {
+  color: var(--muted);
+}
+.email-confirmation > p strong {
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.confirmation-orbit {
+  width: 78px;
+  height: 78px;
+  border-radius: 50% 45% 52% 47%;
+  margin: 3px auto 4px;
+  color: var(--rose);
+  background: var(--blush);
+  display: grid;
+  place-items: center;
+  transform: rotate(-3deg);
+  box-shadow: 0 0 0 8px #b5516a0a;
+}
+.email-confirmation .inline-notice {
+  text-align: left;
+}
+.wallpaper-options {
+  display: grid;
+  gap: 9px;
+}
+.wallpaper-option {
+  width: 100%;
+  min-height: 64px;
+  padding: 9px 12px 9px 9px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  text-align: left;
+}
+.wallpaper-option:hover,
+.wallpaper-option.is-selected {
+  border-color: color-mix(in srgb, var(--rose) 55%, var(--line));
+  background: var(--blush);
+}
+.wallpaper-option > svg {
+  margin-left: auto;
+  color: var(--rose);
+}
+.wallpaper-swatch {
+  width: 46px;
+  height: 46px;
+  border-radius: 45% 55% 48% 52%;
+  display: grid;
+  place-items: center;
+  color: #a35469;
+  box-shadow: inset 0 0 0 1px #ffffff8a;
+}
+.soon-tag.is-ready {
+  background: #e4efe3;
+  color: #56755b;
+}
+:root[data-theme="dark"] .soon-tag.is-ready {
+  background: #2c4030;
+  color: #a4d1aa;
+}
+
+@media (max-width: 980px) {
+  .tactile-card,
+  .album-card,
+  .garden-card,
+  .capsule-card {
+    grid-column: span 12;
+  }
+  .album-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+@media (max-width: 720px) {
+  .app-shell .app-main {
+    background-attachment: scroll;
+  }
+  .message-compose {
+    gap: 5px;
+    padding: 7px;
+  }
+  .compose-tools {
+    gap: 2px;
+  }
+  .compose-tool {
+    width: 35px;
+    height: 38px;
+    border-radius: 10px;
+  }
+  .message-compose textarea {
+    padding-inline: 7px;
+  }
+  .send-button {
+    width: 40px;
+    height: 40px;
+  }
+  .moments-intro h1 {
+    font-size: 31px;
+  }
+  .moments-intro .page-illustration {
+    display: none;
+  }
+  .moments-grid {
+    gap: 13px;
+  }
+  .moments-grid > .card {
+    padding: 19px;
+  }
+  .album-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .tactile-heart {
+    width: min(225px, 72vw);
+  }
+  .garden-visual {
+    height: 140px;
+  }
+  .moments-divider {
+    margin: 28px 0 22px;
+  }
+  .games-heading {
+    margin-bottom: 21px;
+  }
+  .wallpaper-option {
+    min-height: 58px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .heart-rings,
+  .heart-rings::before,
+  .garden-visual .plant,
+  .garden-sparkles,
+  .voice-tool.is-recording {
+    animation: none !important;
+  }
+  .tactile-bloom {
+    background: #f4c5d259;
+  }
+}

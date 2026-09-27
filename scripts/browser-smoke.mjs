@@ -248,6 +248,48 @@ try {
   console.log(
     "PASS: desktop and mobile rendering, no horizontal overflow; light/dark themes.",
   );
+  await a
+    .getByRole("button", { name: "Для двоих", exact: true })
+    .first()
+    .click();
+  await a
+    .getByRole("heading", { name: /Чуть ближе/ })
+    .waitFor();
+  await a.getByText("Тактильность", { exact: true }).waitFor();
+  await a.getByText("Виртуальный сад", { exact: true }).waitFor();
+  await a.getByText("Общий фотоальбом", { exact: true }).waitFor();
+  await a.getByText("Капсула времени", { exact: true }).waitFor();
+  await a.screenshot({
+    path: join(output, "06-moments-desktop.png"),
+    fullPage: true,
+  });
+  await b
+    .getByRole("button", { name: "Для двоих", exact: true })
+    .last()
+    .click();
+  await b
+    .getByRole("heading", { name: /Чуть ближе/ })
+    .waitFor();
+  assert.ok(
+    await b.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+    "Moments mobile layout overflows",
+  );
+  await b.screenshot({
+    path: join(output, "07-moments-mobile.png"),
+    fullPage: true,
+  });
+  console.log(
+    "PASS: tactile, album, garden and capsule widgets render on desktop and mobile.",
+  );
+  await a.getByRole("button", { name: "Настройки", exact: true }).first().click();
+  await a.getByRole("button", { name: "Выбрать", exact: true }).click();
+  await a.getByRole("button", { name: /Небесный лён/ }).click();
+  await a.getByRole("button", { name: "Готово", exact: true }).click();
+  assert.ok(await a.locator(".app-shell.wallpaper-sky-linen").count());
+  await a.reload();
+  await a.getByRole("heading", { name: "Здесь начинается «мы»." }).waitFor();
+  assert.ok(await a.locator(".app-shell.wallpaper-sky-linen").count());
+  console.log("PASS: room wallpaper selection persists after reload.");
   await a.getByRole("button", { name: "Вместе", exact: true }).first().click();
   await a.getByRole("tab", { name: "Заметки", exact: true }).click();
   await a

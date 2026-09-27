@@ -1,5 +1,13 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import type { Snapshot } from "./types";
+import type {
+  GardenState,
+  MediaContext,
+  MediaItem,
+  MediaKind,
+  Message,
+  Snapshot,
+  TimeCapsule,
+} from "./types";
 
 // Publishable keys are intentionally safe to ship in a browser bundle. All
 // authorization is enforced by Postgres functions and RLS, never by this key.
@@ -67,6 +75,86 @@ function has(input: Input, key: string) {
   return Object.prototype.hasOwnProperty.call(input, key);
 }
 
+const mediaBucket = "loveloom-media";
+const signedMediaCache = new Map<
+  string,
+  { url: string; expiresAt: number }
+>();
+const mediaExtensions: Record<string, string> = {
+  "image/jpeg": "jpg",
+  "image/png": "png",
+  "image/webp": "webp",
+  "image/gif": "gif",
+  "image/avif": "avif",
+  "video/mp4": "mp4",
+  "video/webm": "webm",
+  "video/quicktime": "mov",
+  "audio/webm": "webm",
+  "audio/mp4": "m4a",
+  "audio/mpeg": "mp3",
+  "audio/ogg": "ogg",
+  "audio/wav": "wav",
+  "audio/x-m4a": "m4a",
+  "audio/aac": "aac",
+};
+
+function normalizedMime(value: string) {
+  return value.split(";", 1)[0].trim().toLowerCase();
+}
+
+function mediaKind(mime: string): MediaKind | null {
+  if (mime.startsWith("image/")) return "image";
+  if (mime.startsWith("video/")) return "video";
+  if (mime.startsWith("audio/")) return "audio";
+  return null;
+}
+
+async function signMedia<T extends MediaItem>(items: T[]): Promise<T[]> {
+  if (!items.length) return items;
+  const paths = [...new Set(items.map((item) => item.path))];
+  const now = Date.now();
+  const missing = paths.filter(
+    (path) => (signedMediaCache.get(path)?.expiresAt || 0) < now + 60_000,
+  );
+  if (missing.length) {
+    const { data, error } = await cloud()
+      .storage.from(mediaBucket)
+      .createSignedUrls(missing, 10 * 60);
+    if (error) friendly(error);
+    for (const item of data || []) {
+      if (item.path && item.signedUrl)
+        signedMediaCache.set(item.path, {
+          url: item.signedUrl,
+          expiresAt: now + 10 * 60_000,
+        });
+    }
+  }
+  return items.map((item) => ({
+    ...item,
+    url: signedMediaCache.get(item.path)?.url,
+  }));
+}
+
+async function signMessages(messages: Message[]) {
+  const withMedia = messages.filter((message) => message.media?.path);
+  if (!withMedia.length) return messages;
+  const signed = await signMedia(
+    withMedia.map((message) => message.media!) as MediaItem[],
+  );
+  const byId = new Map(signed.map((item) => [item.id, item]));
+  return messages.map((message) => ({
+    ...message,
+    media: message.media ? byId.get(message.media.id) || message.media : null,
+  }));
+}
+
+function appUrl() {
+  const url = new URL(window.location.href);
+  url.search = "";
+  url.hash = "";
+  return url.toString();
+}
+
 export function onCloudAuthChange(refresh: () => void) {
   const { data } = cloud().auth.onAuthStateChange(() => {
     // Supabase recommends deferring follow-up client calls from this callback.
@@ -103,7 +191,7 @@ export async function cloudApi(
     if (!name || name.length > 40) throw new Error("Укажите ваше имя.");
     if (password.length < 10)
       throw new Error("Пароль должен содержать не менее 10 символов.");
-    const redirectTo = window.location.href.split(/[?#]/)[0];
+    const redirectTo = appUrl();
     const { data: result, error } = await cloud().auth.signUp({
       email,
       password,
@@ -111,6 +199,18 @@ export async function cloudApi(
     });
     if (error) friendly(error);
     return { ok: true, needsConfirmation: !result.session };
+  }
+
+  if (route === "auth/resend") {
+    const email = String(data.email || "").trim().toLowerCase();
+    if (!email) throw new Error("Укажите электронную почту.");
+    const { error } = await cloud().auth.resend({
+      type: "signup",
+      email,
+      options: { emailRedirectTo: appUrl() },
+    });
+    if (error) friendly(error);
+    return { ok: true };
   }
 
   if (route === "auth/login") {
@@ -125,6 +225,7 @@ export async function cloudApi(
   if (route === "auth/logout") {
     const { error } = await cloud().auth.signOut({ scope: "local" });
     if (error) friendly(error);
+    signedMediaCache.clear();
     return { ok: true };
   }
 
@@ -155,6 +256,7 @@ export async function cloudApi(
         p_epoch: Number(data.epoch),
         p_confirm: String(data.confirm || ""),
       });
+      signedMediaCache.clear();
       return { ok: true };
     }
     if (action === "delete") {
@@ -162,6 +264,7 @@ export async function cloudApi(
         p_epoch: Number(data.epoch),
         p_confirm: String(data.confirm || ""),
       });
+      signedMediaCache.clear();
       return { ok: true };
     }
     if (action === "update") {
@@ -185,13 +288,106 @@ export async function cloudApi(
     if (input === undefined) {
       const query = new URLSearchParams(path.split("?")[1] || "");
       const raw = query.get("before");
-      return rpc("loveloom_get_messages", {
+      const result = (await rpc("loveloom_get_messages", {
         p_before: raw ? Number(raw) : null,
-      });
+      })) as { messages: Message[]; hasMore: boolean; epoch: number };
+      result.messages = await signMessages(result.messages);
+      return result;
     }
     await rpc("loveloom_add_message", {
       p_epoch: Number(data.epoch),
       p_text: String(data.text || ""),
+    });
+    return { ok: true };
+  }
+
+  if (route === "media") {
+    if (input === undefined) {
+      const query = new URLSearchParams(path.split("?")[1] || "");
+      const context = String(query.get("context") || "album") as MediaContext;
+      const items = (await rpc("loveloom_list_media", {
+        p_context: context,
+      })) as MediaItem[];
+      return { items: await signMedia(items) };
+    }
+
+    const file = data.file;
+    if (!(file instanceof File)) throw new Error("Выберите файл.");
+    const mime = normalizedMime(file.type);
+    const kind = mediaKind(mime);
+    const extension = mediaExtensions[mime];
+    const context = String(data.context || "chat") as MediaContext;
+    const roomId = String(data.roomId || "");
+    if (!kind || !extension)
+      throw new Error("Этот формат файла пока не поддерживается.");
+    if (context === "album" && kind !== "image")
+      throw new Error("В фотоальбом можно добавлять только изображения.");
+    if (!roomId) throw new Error("Комната не найдена.");
+    if (file.size < 1 || file.size > 100 * 1024 * 1024)
+      throw new Error("Размер файла должен быть не больше 100 МБ.");
+    if ((kind === "image" || kind === "audio") && file.size > 25 * 1024 * 1024)
+      throw new Error("Фото и голосовые сообщения должны быть не больше 25 МБ.");
+
+    const id = crypto.randomUUID();
+    const storagePath = `${roomId}/${id}.${extension}`;
+    const bucket = cloud().storage.from(mediaBucket);
+    const { error: uploadError } = await bucket.upload(storagePath, file, {
+      cacheControl: "3600",
+      contentType: mime,
+      upsert: false,
+    });
+    if (uploadError) friendly(uploadError);
+    try {
+      await rpc("loveloom_register_media", {
+        p_id: id,
+        p_epoch: Number(data.epoch),
+        p_path: storagePath,
+        p_kind: kind,
+        p_context: context,
+        p_mime: mime,
+        p_bytes: file.size,
+        p_caption: String(data.caption || ""),
+      });
+    } catch (error) {
+      await bucket.remove([storagePath]).catch(() => {});
+      throw error;
+    }
+    const [item] = await signMedia([
+      {
+        id,
+        room: roomId,
+        author: String(data.authorId || ""),
+        kind,
+        context,
+        mime,
+        bytes: file.size,
+        caption: String(data.caption || "").trim(),
+        path: storagePath,
+        created: Date.now(),
+      },
+    ]);
+    return { ok: true, item };
+  }
+
+  if (route === "capsules") {
+    if (input === undefined)
+      return {
+        capsules: (await rpc("loveloom_list_capsules")) as TimeCapsule[],
+      };
+    await rpc("loveloom_create_capsule", {
+      p_epoch: Number(data.epoch),
+      p_title: String(data.title || ""),
+      p_body: String(data.body || ""),
+      p_opens_at: String(data.opensAt || ""),
+    });
+    return { ok: true };
+  }
+
+  if (route === "garden") {
+    if (input === undefined)
+      return { garden: (await rpc("loveloom_garden_state")) as GardenState };
+    await rpc("loveloom_water_garden", {
+      p_epoch: Number(data.epoch),
     });
     return { ok: true };
   }
@@ -250,4 +446,67 @@ export async function cloudApi(
   if (route.startsWith("admin"))
     throw new Error("Админ-панель будет подключена отдельным защищённым этапом.");
   throw new Error("Функция пока не подключена к облачной beta-версии.");
+}
+
+export type TouchConnection = {
+  sendHeart: () => Promise<boolean>;
+  close: () => void;
+};
+
+export function openCloudTouch(
+  roomId: string,
+  userId: string,
+  handlers: {
+    onHeart: () => void;
+    onPresence: (count: number) => void;
+    onStatus: (status: "connecting" | "ready" | "error") => void;
+  },
+): TouchConnection {
+  const channel = cloud().channel(`loveloom:touch:${roomId}`, {
+    config: {
+      private: true,
+      broadcast: { self: false, ack: true },
+      presence: { key: userId, enabled: true },
+    },
+  });
+  let ready = false;
+  const syncPresence = () =>
+    handlers.onPresence(Object.keys(channel.presenceState()).length);
+
+  handlers.onStatus("connecting");
+  channel
+    .on("broadcast", { event: "heart" }, ({ payload }) => {
+      if (payload?.sender !== userId) handlers.onHeart();
+    })
+    .on("presence", { event: "sync" }, syncPresence)
+    .on("presence", { event: "join" }, syncPresence)
+    .on("presence", { event: "leave" }, syncPresence)
+    .subscribe(async (status) => {
+      if (status === "SUBSCRIBED") {
+        ready = true;
+        handlers.onStatus("ready");
+        await channel.track({ user: userId, joinedAt: Date.now() });
+        syncPresence();
+      } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+        ready = false;
+        handlers.onStatus("error");
+      }
+    });
+
+  return {
+    async sendHeart() {
+      if (!ready) return false;
+      const result = await channel.send({
+        type: "broadcast",
+        event: "heart",
+        payload: { sender: userId, sentAt: Date.now() },
+      });
+      return result === "ok";
+    },
+    close() {
+      ready = false;
+      void channel.untrack();
+      void cloud().removeChannel(channel);
+    },
+  };
 }

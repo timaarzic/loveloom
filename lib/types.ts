@@ -32,6 +32,41 @@ export type Message = {
   author: string;
   text: string;
   created: number;
+  media?: MediaItem | null;
+};
+
+export type MediaKind = "image" | "video" | "audio";
+export type MediaContext = "chat" | "album";
+export type MediaItem = {
+  id: string;
+  room: string;
+  author: string;
+  kind: MediaKind;
+  context: MediaContext;
+  mime: string;
+  bytes: number;
+  caption: string;
+  path: string;
+  created: number;
+  url?: string;
+};
+
+export type TimeCapsule = {
+  id: string;
+  author: string;
+  title: string;
+  body: string | null;
+  opensAt: number;
+  created: number;
+  isOpen: boolean;
+};
+
+export type GardenState = {
+  growth: number;
+  stage: number;
+  wateredToday: boolean;
+  lastWateredBy: string | null;
+  lastWateredAt: number | null;
 };
 export type Snapshot = {
   user: User | null;

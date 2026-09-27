@@ -8,6 +8,7 @@ import type {
   Snapshot,
   TimeCapsule,
 } from "./types";
+import { mediaExtensions, resolveMediaMime } from "./media";
 
 // Publishable keys are intentionally safe to ship in a browser bundle. All
 // authorization is enforced by Postgres functions and RLS, never by this key.
@@ -62,6 +63,12 @@ function friendly(error: CloudError): never {
     throw new Error("Слишком много попыток. Немного подождите и повторите.");
   if (value.includes("failed to fetch") || value.includes("network"))
     throw new Error("Не удалось связаться с облаком. Проверьте интернет.");
+  if (value.includes("mime") || value.includes("content type"))
+    throw new Error("Формат этого файла не поддерживается. Выберите другое фото.");
+  if (value.includes("payload too large") || error?.status === 413)
+    throw new Error("Файл слишком большой для облачной загрузки.");
+  if (value.includes("row-level security") || value.includes("violates security"))
+    throw new Error("Не удалось подтвердить доступ к комнате. Перезайдите и повторите.");
   throw new Error(raw);
 }
 
@@ -80,27 +87,6 @@ const signedMediaCache = new Map<
   string,
   { url: string; expiresAt: number }
 >();
-const mediaExtensions: Record<string, string> = {
-  "image/jpeg": "jpg",
-  "image/png": "png",
-  "image/webp": "webp",
-  "image/gif": "gif",
-  "image/avif": "avif",
-  "video/mp4": "mp4",
-  "video/webm": "webm",
-  "video/quicktime": "mov",
-  "audio/webm": "webm",
-  "audio/mp4": "m4a",
-  "audio/mpeg": "mp3",
-  "audio/ogg": "ogg",
-  "audio/wav": "wav",
-  "audio/x-m4a": "m4a",
-  "audio/aac": "aac",
-};
-
-function normalizedMime(value: string) {
-  return value.split(";", 1)[0].trim().toLowerCase();
-}
 
 function mediaKind(mime: string): MediaKind | null {
   if (mime.startsWith("image/")) return "image";
@@ -313,7 +299,7 @@ export async function cloudApi(
 
     const file = data.file;
     if (!(file instanceof File)) throw new Error("Выберите файл.");
-    const mime = normalizedMime(file.type);
+    const mime = resolveMediaMime(file.type, file.name);
     const kind = mediaKind(mime);
     const extension = mediaExtensions[mime];
     const context = String(data.context || "chat") as MediaContext;
@@ -325,8 +311,8 @@ export async function cloudApi(
     if (!roomId) throw new Error("Комната не найдена.");
     if (file.size < 1 || file.size > 100 * 1024 * 1024)
       throw new Error("Размер файла должен быть не больше 100 МБ.");
-    if ((kind === "image" || kind === "audio") && file.size > 25 * 1024 * 1024)
-      throw new Error("Фото и голосовые сообщения должны быть не больше 25 МБ.");
+    if (kind === "audio" && file.size > 25 * 1024 * 1024)
+      throw new Error("Голосовое сообщение должно быть не больше 25 МБ.");
 
     const id = crypto.randomUUID();
     const storagePath = `${roomId}/${id}.${extension}`;

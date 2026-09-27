@@ -735,7 +735,7 @@ export default function LoveLoom({
     <>
       {preview && (
         <div className="beta-bar" aria-label="Панель дизайн-беты">
-          <strong>LoveLoom · sketch beta 0.4</strong>
+          <strong>LoveLoom · sketch beta 0.4.1</strong>
           <span className="beta-description">
             Вымышленные данные · изменения только в этом браузере
           </span>

@@ -23,9 +23,12 @@ import {
   useEffect,
   useRef,
   useState,
+  type CSSProperties,
   type FormEvent,
 } from "react";
 import { openCloudTouch, type TouchConnection } from "@/lib/cloud";
+import { asset } from "@/lib/assets";
+import { gardenProgress } from "@/lib/garden";
 import type {
   GardenState,
   MediaItem,
@@ -43,6 +46,50 @@ const emptyGarden: GardenState = {
   lastWateredBy: null,
   lastWateredAt: null,
 };
+
+type BloomParticle = {
+  id: number;
+  x: number;
+  y: number;
+  size: number;
+  delay: number;
+  duration: number;
+  rotation: number;
+  color: string;
+};
+
+type TactileBloom = {
+  id: number;
+  particles: BloomParticle[];
+};
+
+const bloomColors = ["#f4a9bd", "#edbfd0", "#e88ca8", "#f6cfda", "#d97899"];
+const gardenTitles = [
+  "Первый росток",
+  "Сад просыпается",
+  "Цветущий уголок",
+  "Большой сад для двоих",
+];
+
+function makeTactileBloom(): TactileBloom {
+  return {
+    id: Date.now(),
+    particles: Array.from({ length: 20 }, (_, id) => {
+      const angle = Math.random() * Math.PI * 2;
+      const distance = 74 + Math.random() * 112;
+      return {
+        id,
+        x: Math.cos(angle) * distance,
+        y: Math.sin(angle) * distance,
+        size: 8 + Math.random() * 17,
+        delay: Math.random() * 210,
+        duration: 1250 + Math.random() * 850,
+        rotation: -120 + Math.random() * 240,
+        color: bloomColors[Math.floor(Math.random() * bloomColors.length)],
+      };
+    }),
+  };
+}
 
 function formatMoment(value: number, timezone: string) {
   return new Intl.DateTimeFormat("ru", {
@@ -98,6 +145,41 @@ export function MediaBubble({ media }: { media: MediaItem }) {
   );
 }
 
+function AlbumPhoto({ item }: { item: MediaItem }) {
+  const [failed, setFailed] = useState(false);
+  const visible = Boolean(item.url) && !failed;
+  return (
+    <a
+      href={item.url || undefined}
+      target="_blank"
+      rel="noreferrer"
+      className="album-photo"
+      aria-label={visible ? "Открыть фотографию" : "Оригинал временно недоступен"}
+      onClick={(event) => {
+        if (!item.url) event.preventDefault();
+      }}
+    >
+      {visible ? (
+        <Image
+          src={item.url!}
+          alt={item.caption || "Фотография в общем альбоме"}
+          fill
+          sizes="(max-width: 720px) 31vw, 180px"
+          loading="lazy"
+          unoptimized
+          onError={() => setFailed(true)}
+        />
+      ) : (
+        <span className="album-photo-fallback">
+          <ImagePlus size={25} />
+          <small>Открыть оригинал</small>
+        </span>
+      )}
+      <span className="album-size">{formatBytes(item.bytes)}</span>
+    </a>
+  );
+}
+
 export default function MomentsHub({
   api,
   room,
@@ -121,15 +203,26 @@ export default function MomentsHub({
   const [loading, setLoading] = useState(cloud);
   const [working, setWorking] = useState(false);
   const [uploadStatus, setUploadStatus] = useState("");
+  const [uploadError, setUploadError] = useState("");
   const [touchStatus, setTouchStatus] = useState<
     "connecting" | "ready" | "error"
   >("connecting");
   const [touchCount, setTouchCount] = useState(0);
-  const [bloom, setBloom] = useState(0);
+  const [bloom, setBloom] = useState<TactileBloom | null>(null);
   const [sentPulse, setSentPulse] = useState(false);
   const uploadRef = useRef<HTMLInputElement>(null);
   const touchRef = useRef<TouchConnection | null>(null);
   const bloomTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pulseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const triggerBloom = useCallback(() => {
+    setBloom(makeTactileBloom());
+    setSentPulse(true);
+    if (bloomTimer.current) clearTimeout(bloomTimer.current);
+    if (pulseTimer.current) clearTimeout(pulseTimer.current);
+    bloomTimer.current = setTimeout(() => setBloom(null), 2400);
+    pulseTimer.current = setTimeout(() => setSentPulse(false), 900);
+  }, []);
 
   const load = useCallback(async () => {
     if (!cloud) {
@@ -163,9 +256,7 @@ export default function MomentsHub({
     if (!cloud) return;
     touchRef.current = openCloudTouch(room.id, user.id, {
       onHeart: () => {
-        setBloom((value) => value + 1);
-        if (bloomTimer.current) clearTimeout(bloomTimer.current);
-        bloomTimer.current = setTimeout(() => setBloom(0), 2600);
+        triggerBloom();
         if ("vibrate" in navigator) navigator.vibrate([90, 45, 120]);
       },
       onPresence: setTouchCount,
@@ -175,8 +266,9 @@ export default function MomentsHub({
       touchRef.current?.close();
       touchRef.current = null;
       if (bloomTimer.current) clearTimeout(bloomTimer.current);
+      if (pulseTimer.current) clearTimeout(pulseTimer.current);
     };
-  }, [cloud, room.id, user.id]);
+  }, [cloud, room.id, triggerBloom, user.id]);
 
   async function uploadAlbum(files: FileList | null) {
     if (!files?.length || working) return;
@@ -185,23 +277,39 @@ export default function MomentsHub({
       return;
     }
     const selected = Array.from(files).slice(0, 12);
+    setUploadError("");
     setWorking(true);
     try {
+      let uploaded = 0;
+      const failures: string[] = [];
       for (let index = 0; index < selected.length; index += 1) {
         const file = selected[index];
         setUploadStatus(`Загружаем ${index + 1} из ${selected.length}`);
-        await api("media", {
-          file,
-          context: "album",
-          roomId: room.id,
-          authorId: user.id,
-          epoch: room.epoch,
-        });
+        try {
+          await api("media", {
+            file,
+            context: "album",
+            roomId: room.id,
+            authorId: user.id,
+            epoch: room.epoch,
+          });
+          uploaded += 1;
+        } catch (error) {
+          failures.push(
+            `${file.name || "Фото"}: ${
+              error instanceof Error ? error.message : "не удалось загрузить"
+            }`,
+          );
+        }
       }
-      tell(selected.length === 1 ? "Фото добавлено в альбом." : "Фотографии добавлены в альбом.");
-      await load();
-    } catch (error) {
-      tell(error instanceof Error ? error.message : "Не удалось загрузить фото.");
+      if (uploaded) await load();
+      if (failures.length) {
+        const message = failures[0];
+        setUploadError(message);
+        tell(uploaded ? `Загружено ${uploaded}; часть файлов не добавилась.` : message);
+      } else {
+        tell(uploaded === 1 ? "Фото добавлено в альбом." : "Фотографии добавлены в альбом.");
+      }
     } finally {
       setWorking(false);
       setUploadStatus("");
@@ -270,8 +378,7 @@ export default function MomentsHub({
       tell("Сигнал не отправился. Проверьте соединение.");
       return;
     }
-    setSentPulse(true);
-    window.setTimeout(() => setSentPulse(false), 900);
+    triggerBloom();
     tell("Сигнал отправлен.");
   }
 
@@ -279,15 +386,11 @@ export default function MomentsHub({
   minDate.setMinutes(minDate.getMinutes() - minDate.getTimezoneOffset());
   const minCapsuleDate = minDate.toISOString().slice(0, 16);
   const partnerHere = hasPartner && touchCount >= 2 && touchStatus === "ready";
+  const gardenGrowth = gardenProgress(garden.growth);
+  const gardenStage = gardenGrowth.stage;
 
   return (
     <>
-      {bloom > 0 && (
-        <div className="tactile-bloom" key={bloom} aria-hidden="true">
-          <span><Heart fill="currentColor" /></span>
-          <i /><i /><i />
-        </div>
-      )}
       <div className="moments-intro">
         <div>
           <div className="eyebrow">МАЛЕНЬКИЕ РИТУАЛЫ ДЛЯ ДВОИХ</div>
@@ -319,16 +422,48 @@ export default function MomentsHub({
           <p>
             Откройте этот раздел одновременно. Нажатие мягко оживит экран партнёра и включит вибрацию, если устройство её поддерживает.
           </p>
-          <button
-            className={`tactile-heart ${sentPulse ? "is-sent" : ""}`}
-            onClick={() => void sendHeart()}
-            disabled={!cloud || touchStatus !== "ready"}
-            aria-label="Отправить тактильное сердце"
-          >
-            <span className="heart-rings" />
-            <Heart size={55} fill="currentColor" strokeWidth={1.3} />
-            <small>{partnerHere ? "коснуться" : "нужно быть здесь вдвоём"}</small>
-          </button>
+          <div className="tactile-heart-wrap">
+            {bloom && (
+              <span className="tactile-bloom" key={bloom.id} aria-hidden="true">
+                <span className="tactile-wave wave-one" />
+                <span className="tactile-wave wave-two" />
+                {bloom.particles.map((particle) => (
+                  <i
+                    key={particle.id}
+                    style={
+                      {
+                        "--bloom-x": `${particle.x}px`,
+                        "--bloom-y": `${particle.y}px`,
+                        "--bloom-size": `${particle.size}px`,
+                        "--bloom-delay": `${particle.delay}ms`,
+                        "--bloom-duration": `${particle.duration}ms`,
+                        "--bloom-rotation": `${particle.rotation}deg`,
+                        "--bloom-color": particle.color,
+                      } as CSSProperties
+                    }
+                  />
+                ))}
+              </span>
+            )}
+            <button
+              className={`tactile-heart ${sentPulse ? "is-sent" : ""}`}
+              onClick={() => void sendHeart()}
+              disabled={!cloud || touchStatus !== "ready"}
+              aria-label="Отправить тактильное сердце"
+            >
+              <Image
+                className="tactile-logo"
+                src={asset("/loveloom-mark.png")}
+                width={150}
+                height={150}
+                alt=""
+                aria-hidden="true"
+              />
+            </button>
+          </div>
+          <span className="tactile-action">
+            {partnerHere ? "Нажмите на сердце" : "Нужно открыть раздел вдвоём"}
+          </span>
           <div className="privacy-note compact">
             <LockKeyhole size={15} /> Сигнал не сохраняется и работает только пока раздел открыт.
           </div>
@@ -339,16 +474,45 @@ export default function MomentsHub({
             <span><Sprout size={19} /> Виртуальный сад</span>
             <span>{garden.growth} забот</span>
           </div>
-          <div className={`garden-visual stage-${garden.stage}`} aria-label={`Стадия сада ${garden.stage + 1} из 6`}>
+          <div className={`garden-visual stage-${gardenStage}`} aria-label={`Стадия сада ${gardenStage + 1} из 4`}>
+            <span className="garden-sun" />
             <span className="garden-ground" />
             <Sprout className="plant plant-one" />
-            {garden.stage >= 1 && <Sprout className="plant plant-two" />}
-            {garden.stage >= 2 && <Flower2 className="plant flower-one" />}
-            {garden.stage >= 3 && <Flower2 className="plant flower-two" />}
-            {garden.stage >= 4 && <Flower2 className="plant flower-three" />}
-            {garden.stage >= 5 && <Sparkles className="garden-sparkles" />}
+            {gardenStage >= 1 && (
+              <>
+                <Sprout className="plant plant-two" />
+                <Flower2 className="plant flower-one" />
+              </>
+            )}
+            {gardenStage >= 2 && (
+              <>
+                <span className="garden-bush bush-one" />
+                <span className="garden-bush bush-two" />
+                <Flower2 className="plant flower-two" />
+              </>
+            )}
+            {gardenStage >= 3 && (
+              <>
+                <span className="garden-tree" aria-hidden="true">
+                  <span className="garden-tree-trunk" />
+                  <span className="garden-tree-crown" />
+                </span>
+                <Flower2 className="plant flower-three" />
+                <Sparkles className="garden-sparkles" />
+              </>
+            )}
           </div>
-          <h3>{garden.stage < 2 ? "Ваш сад начинает расти" : garden.stage < 5 ? "Здесь становится уютнее" : "Сад расцвёл"}</h3>
+          <h3>{gardenTitles[gardenStage]}</h3>
+          <div className="garden-milestone" aria-label="Прогресс роста сада">
+            <span>
+              {gardenGrowth.next
+                ? `До следующего роста: ${gardenGrowth.remaining}`
+                : "Сад достиг самой пышной стадии"}
+            </span>
+            <span className="garden-progress-track" aria-hidden="true">
+              <i style={{ width: `${gardenGrowth.percent}%` }} />
+            </span>
+          </div>
           <p>Каждый участник может полить сад один раз в день по времени комнаты.</p>
           <button
             className="button secondary full garden-water"
@@ -370,8 +534,9 @@ export default function MomentsHub({
             ref={uploadRef}
             hidden
             type="file"
-            accept="image/jpeg,image/png,image/webp,image/gif,image/avif"
+            accept="image/*,.heic,.heif"
             multiple
+            aria-label="Выбрать фотографии для общего альбома"
             onChange={(event) => void uploadAlbum(event.target.files)}
           />
           <button
@@ -386,32 +551,12 @@ export default function MomentsHub({
             )}
             {uploadStatus || "Добавить фотографии"}
           </button>
+          {uploadError && <p className="album-upload-error" role="alert">{uploadError}</p>}
           {loading ? (
             <div className="feature-loader"><LoaderCircle className="spin" /></div>
           ) : album.length ? (
             <div className="album-grid">
-              {album.map((item) => (
-                <a
-                  key={item.id}
-                  href={item.url || "#"}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="album-photo"
-                  aria-disabled={!item.url}
-                >
-                  {item.url && (
-                    <Image
-                      src={item.url}
-                      alt={item.caption || "Фотография в общем альбоме"}
-                      fill
-                      sizes="(max-width: 720px) 31vw, 180px"
-                      loading="lazy"
-                      unoptimized
-                    />
-                  )}
-                  <span>{formatBytes(item.bytes)}</span>
-                </a>
-              ))}
+              {album.map((item) => <AlbumPhoto item={item} key={item.id} />)}
             </div>
           ) : (
             <div className="album-empty">
@@ -426,6 +571,7 @@ export default function MomentsHub({
             <span><Hourglass size={19} /> Капсула времени</span>
             <span>{capsules.length} капсул</span>
           </div>
+          <p className="capsule-limit-note">Хранятся три последние капсулы. Новая автоматически заменяет самую старую.</p>
           <form className="capsule-form" onSubmit={createCapsule}>
             <label>
               Название

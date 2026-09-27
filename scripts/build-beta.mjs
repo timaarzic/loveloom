@@ -2,7 +2,8 @@ import { cpSync, mkdirSync, rmSync, writeFileSync, symlinkSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { spawnSync } from "node:child_process";
 
-// Create a public, static-only copy. Never copy APIs, databases, secrets or admin scripts.
+// Create the public cloud beta. The browser receives only Supabase's publishable
+// key; database access remains protected by authenticated RPC functions and RLS.
 const root = process.cwd(),
   stage = join(root, ".beta-build"),
   out = join(root, "out");
@@ -16,7 +17,7 @@ for (const dir of ["components", "public"])
   cpSync(join(root, dir), join(stage, dir), { recursive: true });
 for (const file of ["layout.tsx", "globals.css", "sketch.css"])
   cpSync(join(root, "app", file), join(stage, "app", file));
-for (const file of ["types.ts", "preview.ts", "assets.ts"])
+for (const file of ["types.ts", "preview.ts", "assets.ts", "cloud.ts"])
   cpSync(join(root, "lib", file), join(stage, "lib", file));
 for (const file of ["package.json", "tsconfig.json", "next-env.d.ts"])
   cpSync(join(root, file), join(stage, file));
@@ -27,18 +28,18 @@ symlinkSync(
 );
 writeFileSync(
   join(stage, "app/page.tsx"),
-  'import LoveLoom from "@/components/loveloom"; export default function Page(){return <LoveLoom preview/>;}\n',
+  'import LoveLoom from "@/components/loveloom"; export default function Page(){return <LoveLoom cloud/>;}\n',
 );
 writeFileSync(
   join(stage, "next.config.mjs"),
   `export default {output:'export',basePath:${JSON.stringify(base)},images:{unoptimized:true},trailingSlash:true,poweredByHeader:false,turbopack:{root:${JSON.stringify(root)}}};\n`,
 );
-// Public preview does not register a worker or provide install/auth semantics.
+// The beta intentionally stays online-only for now, so no offline worker is copied.
 rmSync(join(stage, "public/sw.js"), { force: true });
 writeFileSync(
   join(stage, "public/manifest.webmanifest"),
   JSON.stringify({
-    name: "LoveLoom · дизайн-бета",
+    name: "LoveLoom · облачная beta",
     short_name: "LoveLoom",
     lang: "ru",
     start_url: base + "/",
@@ -69,5 +70,5 @@ rmSync(out, { recursive: true, force: true });
 cpSync(join(stage, "out"), out, { recursive: true });
 writeFileSync(join(out, ".nojekyll"), "");
 console.log(
-  "Static design beta ready in out/. No API or database is included.",
+  "Static cloud beta ready in out/. Supabase access is RLS-protected.",
 );

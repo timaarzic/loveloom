@@ -259,6 +259,18 @@ try {
   await a.getByText("Виртуальный сад", { exact: true }).waitFor();
   await a.getByText("Общий фотоальбом", { exact: true }).waitFor();
   await a.getByText("Капсула времени", { exact: true }).waitFor();
+  await a.getByRole("button", { name: "Отправить тактильное сердце" }).waitFor();
+  assert.match(
+    await a
+      .getByRole("button", { name: "Отправить тактильное сердце" })
+      .locator("img")
+      .getAttribute("src"),
+    /loveloom-mark\.png/,
+  );
+  await a.getByLabel("Стадия сада 1 из 4").waitFor();
+  await a
+    .getByText("Хранятся три последние капсулы.", { exact: false })
+    .waitFor();
   await a.screenshot({
     path: join(output, "06-moments-desktop.png"),
     fullPage: true,
@@ -279,7 +291,7 @@ try {
     fullPage: true,
   });
   console.log(
-    "PASS: tactile, album, garden and capsule widgets render on desktop and mobile.",
+    "PASS: tactile logo, album, four-stage garden and three-capsule notice render on desktop and mobile.",
   );
   await a.getByRole("button", { name: "Настройки", exact: true }).first().click();
   await a.getByRole("button", { name: "Выбрать", exact: true }).click();

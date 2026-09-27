@@ -17,7 +17,14 @@ for (const dir of ["components", "public"])
   cpSync(join(root, dir), join(stage, dir), { recursive: true });
 for (const file of ["layout.tsx", "globals.css", "sketch.css"])
   cpSync(join(root, "app", file), join(stage, "app", file));
-for (const file of ["types.ts", "preview.ts", "assets.ts", "cloud.ts"])
+for (const file of [
+  "types.ts",
+  "preview.ts",
+  "assets.ts",
+  "cloud.ts",
+  "garden.ts",
+  "media.ts",
+])
   cpSync(join(root, "lib", file), join(stage, "lib", file));
 for (const file of ["package.json", "tsconfig.json", "next-env.d.ts"])
   cpSync(join(root, file), join(stage, file));

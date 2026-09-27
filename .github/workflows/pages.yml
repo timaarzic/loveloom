@@ -1,4 +1,4 @@
-name: LoveLoom design beta
+name: LoveLoom cloud beta
 on:
   push:
     branches: [main]

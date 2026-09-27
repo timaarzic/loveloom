@@ -55,6 +55,7 @@ import {
 import type { Snapshot, Entry, EntryKind, Message, Game } from "@/lib/types";
 import { asset } from "@/lib/assets";
 import { previewApi, previewScreen } from "@/lib/preview";
+import { cloudApi, onCloudAuthChange } from "@/lib/cloud";
 type Tab = "home" | "chat" | "together" | "games" | "settings";
 type Modal =
   | "create"
@@ -243,7 +244,13 @@ function Dialog({
     </dialog>
   );
 }
-export default function LoveLoom({ preview = false }: { preview?: boolean }) {
+export default function LoveLoom({
+  preview = false,
+  cloud = false,
+}: {
+  preview?: boolean;
+  cloud?: boolean;
+}) {
   const [hiddenWidgets, setHiddenWidgets] = useState<string[]>([]);
   const [s, setS] = useState<Snapshot>(empty),
     [loading, setLoading] = useState(true),
@@ -283,6 +290,7 @@ export default function LoveLoom({ preview = false }: { preview?: boolean }) {
   snapshot.current = s;
   useEffect(() => {
     document.body.classList.toggle("preview-mode", preview);
+    document.body.classList.toggle("cloud-mode", cloud);
     try {
       const saved = JSON.parse(
         localStorage.getItem("loveloom-hidden-widgets") || "[]",
@@ -290,10 +298,13 @@ export default function LoveLoom({ preview = false }: { preview?: boolean }) {
       if (Array.isArray(saved))
         setHiddenWidgets(saved.filter((v) => typeof v === "string"));
     } catch {}
-    if (!preview && "serviceWorker" in navigator)
+    if (!preview && !cloud && "serviceWorker" in navigator)
       void navigator.serviceWorker.register("/sw.js").catch(() => {});
-    return () => document.body.classList.remove("preview-mode");
-  }, [preview]);
+    return () => {
+      document.body.classList.remove("preview-mode");
+      document.body.classList.remove("cloud-mode");
+    };
+  }, [preview, cloud]);
   const tell = useCallback((message: string) => {
     setToast(message);
     if (toastTimer.current) clearTimeout(toastTimer.current);
@@ -302,6 +313,7 @@ export default function LoveLoom({ preview = false }: { preview?: boolean }) {
   const api = useCallback(
     async (path: string, body?: unknown, method = "POST") => {
       if (preview) return previewApi(path, body, method);
+      if (cloud) return cloudApi(path, body, method);
       const response = await fetch("/api/" + path, {
         method: body === undefined ? "GET" : method,
         headers:
@@ -325,7 +337,7 @@ export default function LoveLoom({ preview = false }: { preview?: boolean }) {
         throw new Error(result.error || "Не удалось выполнить действие.");
       return result;
     },
-    [preview],
+    [preview, cloud],
   );
   const refresh = useCallback(async () => {
     const seq = ++requestSeq.current;
@@ -376,6 +388,10 @@ export default function LoveLoom({ preview = false }: { preview?: boolean }) {
       window.removeEventListener("offline", off);
     };
   }, [refresh]);
+  useEffect(() => {
+    if (!cloud) return;
+    return onCloudAuthChange(() => void refresh());
+  }, [cloud, refresh]);
   useEffect(() => {
     if (!s.user) return;
     const beat = () => {
@@ -483,12 +499,17 @@ export default function LoveLoom({ preview = false }: { preview?: boolean }) {
     e.preventDefault();
     const f = new FormData(e.currentTarget);
     await act(async () => {
-      await api(`auth/${auth}`, {
+      const result = await api(`auth/${auth}`, {
         name: f.get("name"),
         email: f.get("email"),
         password: f.get("password"),
         ageConfirmed: f.get("age") === "on",
       });
+      if (auth === "register" && result?.needsConfirmation) {
+        setAuth("login");
+        tell("Аккаунт создан. Откройте письмо и подтвердите почту, затем войдите.");
+        return;
+      }
       await refresh();
     });
   }
@@ -555,8 +576,12 @@ export default function LoveLoom({ preview = false }: { preview?: boolean }) {
       <div className="loading-screen">
         <Logo />
         <WifiOff />
-        <h2>Нет связи с локальным сервером</h2>
-        <p>Проверьте, что LoveLoom запущен.</p>
+        <h2>{cloud ? "Не удалось связаться с LoveLoom" : "Нет связи с локальным сервером"}</h2>
+        <p>
+          {cloud
+            ? "Проверьте интернет и попробуйте ещё раз. Ваши данные остаются в облаке."
+            : "Проверьте, что LoveLoom запущен."}
+        </p>
         <button className="button" onClick={() => void refresh()}>
           Попробовать снова
         </button>
@@ -740,7 +765,9 @@ export default function LoveLoom({ preview = false }: { preview?: boolean }) {
               <Info size={16} />
               {preview
                 ? "Предпросмотр экрана. Поля заполнены вымышленными данными и не создают аккаунт. Нажмите кнопку, чтобы посмотреть следующий экран."
-                : "Локальная альфа: подтверждение почты и восстановление пароля ещё не подключены. Используйте тестовый адрес и отдельный пароль."}
+                : cloud
+                  ? "Облачная beta: сессия сохранится на этом устройстве. После регистрации может понадобиться подтверждение почты. Используйте отдельный пароль."
+                  : "Локальная альфа: подтверждение почты и восстановление пароля ещё не подключены. Используйте тестовый адрес и отдельный пароль."}
             </p>
             <div className="auth-card-footer">
               <span>Создание комнаты сейчас бесплатно</span>
@@ -834,7 +861,7 @@ export default function LoveLoom({ preview = false }: { preview?: boolean }) {
             </div>
           </div>
           <footer className="auth-footer">
-            <span>Локальная альфа · без оплаты</span>
+            <span>{cloud ? "Облачная beta · без оплаты" : "Локальная альфа · без оплаты"}</span>
             {credit}
           </footer>
         </main>
@@ -2143,17 +2170,20 @@ export default function LoveLoom({ preview = false }: { preview?: boolean }) {
               <p>
                 {preview
                   ? "Это интерактивная дизайн-бета. Можно менять записи, открывать виджеты и примерять обе роли. Настоящей регистрации, общей базы и связи между устройствами здесь нет."
-                  : "Локальная версия с серверной базой. Следующий этап — подключение облака для двух разных устройств."}
+                  : cloud
+                    ? "Это рабочая облачная beta. Аккаунт, комната, чат и общие записи сохраняются в базе и синхронизируются между двумя устройствами."
+                    : "Локальная версия с серверной базой. Следующий этап — подключение облака для двух разных устройств."}
               </p>
               <ul className="progress-list">
                 <li>
-                  <strong>Можно попробовать</strong>Рисованный стиль, две темы,
-                  карточки разделов, настройки виджетов, чат, календарь,
-                  заметки, желания, фильмы, музыка и четыре мини-игры.
+                  <strong>{cloud ? "Работает в облаке" : "Можно попробовать"}</strong>
+                  Регистрация, постоянный вход, комнаты для двоих, чат,
+                  календарь, заметки, желания, фильмы, музыка, расстояние и
+                  четыре мини-игры.
                 </li>
                 <li>
-                  <strong>Следующий этап</strong>Облачные аккаунты, настоящая
-                  синхронизация, восстановление доступа и вложения.
+                  <strong>Следующий этап</strong>Восстановление доступа,
+                  фотографии, видео и голосовые сообщения.
                 </li>
                 <li>
                   <strong>После подключения связи</strong>Аудио- и видеозвонки в
@@ -2532,13 +2562,13 @@ export default function LoveLoom({ preview = false }: { preview?: boolean }) {
             </div>
           )}
           {modal === "admin" &&
-            (preview ? (
+            (preview || cloud ? (
               <div className="form-stack">
                 <ShieldCheck size={38} />
                 <p>
-                  Админка доступна только владельцу в серверной версии.
-                  Публичная дизайн-бета не содержит настоящих аккаунтов, паролей
-                  и переписки.
+                  {cloud
+                    ? "Аккаунты и комнаты уже защищены на сервере. Отдельную административную панель я подключу следующим этапом, без доступа к текстам личной переписки."
+                    : "Админка доступна только владельцу в серверной версии. Публичная дизайн-бета не содержит настоящих аккаунтов, паролей и переписки."}
                 </p>
                 <button className="button" onClick={() => setModal("progress")}>
                   Посмотреть готовые функции

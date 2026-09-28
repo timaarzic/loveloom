@@ -55,11 +55,18 @@ import {
   Paperclip,
   Palette,
   Square,
+  BellRing,
 } from "lucide-react";
 import type { Snapshot, Entry, EntryKind, Message, Game } from "@/lib/types";
 import { asset } from "@/lib/assets";
 import { previewApi, previewScreen } from "@/lib/preview";
 import { cloudApi, onCloudAuthChange } from "@/lib/cloud";
+import {
+  startPcmVoiceRecorder,
+  VOICE_MAX_MS,
+  type PcmVoiceRecorder,
+} from "@/lib/voice";
+import { registerLoveLoomWorker, type PushState } from "@/lib/push";
 import MomentsHub, { MediaBubble } from "@/components/moments";
 type Tab = "home" | "chat" | "together" | "games" | "settings";
 type Modal =
@@ -77,6 +84,8 @@ type Modal =
   | "call"
   | "progress"
   | "email"
+  | "recovery"
+  | "new-password"
   | "wallpaper"
   | null;
 
@@ -281,7 +290,8 @@ export default function LoveLoom({
     [toast, setToast] = useState("");
   const [pendingEmail, setPendingEmail] = useState(""),
     [wallpaper, setWallpaper] = useState<Wallpaper>("rose-mist"),
-    [recording, setRecording] = useState(false);
+    [recording, setRecording] = useState(false),
+    [pushState, setPushState] = useState<PushState>("checking");
   const [roomCode, setRoomCode] = useState(""),
     [reveal, setReveal] = useState(false),
     [entry, setEntry] = useState<Entry | null>(null);
@@ -307,9 +317,8 @@ export default function LoveLoom({
     stick = useRef(true),
     toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null),
     chatMediaInput = useRef<HTMLInputElement>(null),
-    recorder = useRef<MediaRecorder | null>(null),
-    voiceChunks = useRef<Blob[]>([]),
-    voiceStream = useRef<MediaStream | null>(null);
+    voiceRecorder = useRef<PcmVoiceRecorder | null>(null),
+    voiceLimitTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   snapshot.current = s;
   useEffect(() => {
     document.body.classList.toggle("preview-mode", preview);
@@ -321,8 +330,7 @@ export default function LoveLoom({
       if (Array.isArray(saved))
         setHiddenWidgets(saved.filter((v) => typeof v === "string"));
     } catch {}
-    if (!preview && !cloud && "serviceWorker" in navigator)
-      void navigator.serviceWorker.register("/sw.js").catch(() => {});
+    if (!preview) void registerLoveLoomWorker().catch(() => {});
     return () => {
       document.body.classList.remove("preview-mode");
       document.body.classList.remove("cloud-mode");
@@ -413,8 +421,20 @@ export default function LoveLoom({
   }, [refresh]);
   useEffect(() => {
     if (!cloud) return;
-    return onCloudAuthChange(() => void refresh());
+    return onCloudAuthChange((event) => {
+      if (event === "PASSWORD_RECOVERY") setModal("new-password");
+      void refresh();
+    });
   }, [cloud, refresh]);
+  useEffect(() => {
+    if (!cloud || !s.user) return;
+    const url = new URL(location.href);
+    if (url.searchParams.get("recovery") !== "1") return;
+    setModal("new-password");
+    url.searchParams.delete("recovery");
+    url.searchParams.delete("code");
+    history.replaceState(null, "", url.pathname + url.search + url.hash);
+  }, [cloud, s.user?.id]);
   useEffect(() => {
     const roomId = s.room?.id;
     if (!roomId) {
@@ -425,30 +445,43 @@ export default function LoveLoom({
     const valid = wallpapers.some((item) => item.id === saved);
     setWallpaper(valid ? (saved as Wallpaper) : "rose-mist");
   }, [s.room?.id]);
+  useEffect(() => {
+    if (!cloud || !s.user || !s.room) {
+      setPushState(cloud ? "checking" : "unsupported");
+      return;
+    }
+    let active = true;
+    setPushState("checking");
+    void api("push", { action: "status" })
+      .then((result) => {
+        if (active) setPushState(result.state as PushState);
+      })
+      .catch(() => {
+        if (active) setPushState("disabled");
+      });
+    return () => {
+      active = false;
+    };
+  }, [api, cloud, s.room?.id, s.user?.id]);
+  useEffect(() => {
+    if (!s.room || new URLSearchParams(location.search).get("open") !== "chat")
+      return;
+    setTab("chat");
+    history.replaceState(null, "", location.pathname + location.hash);
+  }, [s.room?.id]);
   useEffect(
     () => () => {
-      const active = recorder.current;
-      if (active && active.state !== "inactive") {
-        active.onstop = null;
-        active.stop();
-      }
-      voiceStream.current?.getTracks().forEach((track) => track.stop());
+      if (voiceLimitTimer.current) clearTimeout(voiceLimitTimer.current);
+      void voiceRecorder.current?.cancel();
     },
     [],
   );
   useEffect(() => {
     if (tab === "chat" && s.user) return;
-    const active = recorder.current;
-    const stream = voiceStream.current;
-    if (!active && !stream) return;
-    if (active && active.state !== "inactive") {
-      active.onstop = null;
-      active.stop();
-    }
-    stream?.getTracks().forEach((track) => track.stop());
-    recorder.current = null;
-    voiceStream.current = null;
-    voiceChunks.current = [];
+    if (!voiceRecorder.current) return;
+    if (voiceLimitTimer.current) clearTimeout(voiceLimitTimer.current);
+    void voiceRecorder.current.cancel();
+    voiceRecorder.current = null;
     setRecording(false);
   }, [tab, s.user?.id]);
   useEffect(() => {
@@ -651,60 +684,72 @@ export default function LoveLoom({
     });
   }
 
-  async function toggleVoiceRecording() {
-    if (recording) {
-      recorder.current?.stop();
-      return;
+  async function finishVoiceRecording() {
+    const active = voiceRecorder.current;
+    if (!active) return;
+    voiceRecorder.current = null;
+    if (voiceLimitTimer.current) clearTimeout(voiceLimitTimer.current);
+    voiceLimitTimer.current = null;
+    setRecording(false);
+    try {
+      const file = await active.stop();
+      await uploadChatFile(file);
+    } catch (error) {
+      tell(error instanceof Error ? error.message : "Не удалось подготовить запись.");
     }
+  }
+
+  async function toggleVoiceRecording() {
+    if (recording) return finishVoiceRecording();
     if (!cloud) {
       tell("Голосовые сообщения доступны в облачной beta-версии.");
       return;
     }
-    if (!("MediaRecorder" in window) || !navigator.mediaDevices?.getUserMedia) {
+    if (!navigator.mediaDevices?.getUserMedia || !("AudioContext" in window)) {
       tell("Этот браузер не поддерживает запись голосовых сообщений.");
       return;
     }
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      voiceStream.current = stream;
-      const preferred = [
-        "audio/webm;codecs=opus",
-        "audio/mp4",
-        "audio/webm",
-      ].find((mime) => MediaRecorder.isTypeSupported(mime));
-      const nextRecorder = new MediaRecorder(
-        stream,
-        preferred ? { mimeType: preferred } : undefined,
-      );
-      voiceChunks.current = [];
-      nextRecorder.ondataavailable = (event) => {
-        if (event.data.size) voiceChunks.current.push(event.data);
-      };
-      nextRecorder.onstop = () => {
-        setRecording(false);
-        stream.getTracks().forEach((track) => track.stop());
-        voiceStream.current = null;
-        recorder.current = null;
-        const type = nextRecorder.mimeType || preferred || "audio/webm";
-        const extension = type.startsWith("audio/mp4") ? "m4a" : "webm";
-        const blob = new Blob(voiceChunks.current, { type });
-        voiceChunks.current = [];
-        if (!blob.size) {
-          tell("Запись получилась пустой. Попробуйте ещё раз.");
-          return;
-        }
-        const file = new File([blob], `voice-${Date.now()}.${extension}`, {
-          type,
-        });
-        void uploadChatFile(file);
-      };
-      recorder.current = nextRecorder;
-      nextRecorder.start(500);
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+        },
+      });
+      voiceRecorder.current = await startPcmVoiceRecorder(stream);
       setRecording(true);
-      tell("Запись началась. Нажмите квадрат, чтобы отправить.");
-    } catch {
-      tell("Не удалось получить доступ к микрофону.");
+      voiceLimitTimer.current = setTimeout(
+        () => void finishVoiceRecording(),
+        VOICE_MAX_MS,
+      );
+      tell("Запись началась. Нажмите квадрат, чтобы отправить · до 3 минут.");
+    } catch (error) {
+      tell(
+        error instanceof Error && error.message.includes("поддерживает")
+          ? error.message
+          : "Не удалось получить доступ к микрофону.",
+      );
     }
+  }
+
+  async function togglePush() {
+    if (
+      pushState === "checking" ||
+      pushState === "unsupported" ||
+      pushState === "install-required"
+    )
+      return;
+    await act(async () => {
+      const action = pushState === "enabled" ? "disable" : "enable";
+      const result = await api("push", { action });
+      setPushState(result.state as PushState);
+      tell(
+        action === "enable"
+          ? "Push включены на этом устройстве."
+          : "Push выключены на этом устройстве.",
+      );
+    });
   }
 
   if (loading)
@@ -735,7 +780,7 @@ export default function LoveLoom({
     <>
       {preview && (
         <div className="beta-bar" aria-label="Панель дизайн-беты">
-          <strong>LoveLoom · sketch beta 0.4.1</strong>
+          <strong>LoveLoom · sketch beta 0.5</strong>
           <span className="beta-description">
             Вымышленные данные · изменения только в этом браузере
           </span>
@@ -883,6 +928,18 @@ export default function LoveLoom({
                   </button>
                 </div>
               </label>
+              {auth === "login" && cloud && (
+                <button
+                  type="button"
+                  className="text-button auth-recovery"
+                  onClick={() => {
+                    setPendingEmail("");
+                    setModal("recovery");
+                  }}
+                >
+                  Не помню пароль
+                </button>
+              )}
               {auth === "register" && (
                 <label className="checkbox-label">
                   <input
@@ -2183,9 +2240,38 @@ export default function LoveLoom({
                       <div className="setting-row">
                         <div>
                           <strong>Push-уведомления</strong>
-                          <p>Ещё не подключены</p>
+                          <p>
+                            {pushState === "checking"
+                              ? "Проверяем это устройство…"
+                              : pushState === "enabled"
+                                ? "Новые сообщения придут, даже когда LoveLoom закрыт"
+                                : pushState === "denied"
+                                  ? "Разрешите уведомления в настройках браузера"
+                                  : pushState === "install-required"
+                                    ? "На iPhone добавьте LoveLoom на экран «Домой»"
+                                    : pushState === "unsupported"
+                                      ? "Этот браузер не поддерживает Push-уведомления"
+                                      : "Включаются отдельно на каждом устройстве"}
+                          </p>
                         </div>
-                        <span className="soon-tag">Позже</span>
+                        {pushState === "enabled" || pushState === "disabled" ? (
+                          <button
+                            className="button secondary small"
+                            disabled={busy}
+                            onClick={() => void togglePush()}
+                          >
+                            <BellRing size={15} />
+                            {pushState === "enabled" ? "Выключить" : "Включить"}
+                          </button>
+                        ) : (
+                          <span className={`soon-tag ${pushState === "checking" ? "" : "is-ready"}`}>
+                            {pushState === "checking"
+                              ? "Проверка"
+                              : pushState === "denied"
+                                ? "Запрещены"
+                                : "Недоступно"}
+                          </span>
+                        )}
                       </div>
                       <div className="setting-row">
                         <div>
@@ -2264,6 +2350,8 @@ export default function LoveLoom({
               call: "Побыть рядом",
               progress: "LoveLoom · что уже готово",
               email: "Подтвердите почту",
+              recovery: "Вернуть доступ",
+              "new-password": "Новый пароль",
               wallpaper: "Обои вашего пространства",
             }[modal]
           }
@@ -2311,6 +2399,112 @@ export default function LoveLoom({
                 Перейти ко входу
               </button>
             </div>
+          )}
+          {modal === "recovery" &&
+            (pendingEmail ? (
+              <div className="form-stack email-confirmation">
+                <span className="confirmation-orbit">
+                  <Mail size={32} />
+                </span>
+                <h3>Проверьте почту</h3>
+                <p>
+                  Если аккаунт <strong>{pendingEmail}</strong> существует, мы
+                  отправили фирменную ссылку для нового пароля.
+                </p>
+                <div className="inline-notice">
+                  <ShieldCheck size={20} />
+                  <span>Ссылка одноразовая. Никому её не пересылайте.</span>
+                </div>
+                <button className="button secondary full" onClick={() => setModal(null)}>
+                  Вернуться ко входу
+                </button>
+              </div>
+            ) : (
+              <form
+                className="form-stack"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  const email = String(new FormData(event.currentTarget).get("email") || "")
+                    .trim()
+                    .toLowerCase();
+                  void act(async () => {
+                    await api("auth/recovery", { email });
+                    setPendingEmail(email);
+                  });
+                }}
+              >
+                <p className="muted">
+                  Укажите почту аккаунта — LoveLoom пришлёт безопасную ссылку для смены пароля.
+                </p>
+                <label>
+                  Электронная почта
+                  <div className="input-icon">
+                    <Mail size={18} />
+                    <input
+                      name="email"
+                      type="email"
+                      autoComplete="email"
+                      placeholder="you@example.com"
+                      maxLength={254}
+                      required
+                      autoFocus
+                    />
+                  </div>
+                </label>
+                <button className="button full" disabled={busy}>
+                  {busy ? <LoaderCircle className="spin" size={18} /> : <Mail size={18} />}
+                  Отправить ссылку
+                </button>
+              </form>
+            ))}
+          {modal === "new-password" && (
+            <form
+              className="form-stack"
+              onSubmit={(event) => {
+                event.preventDefault();
+                const data = new FormData(event.currentTarget);
+                const password = String(data.get("password") || "");
+                const confirmation = String(data.get("confirmation") || "");
+                void act(async () => {
+                  if (password !== confirmation)
+                    throw new Error("Пароли не совпадают.");
+                  await api("auth/update-password", { password });
+                  setModal(null);
+                  tell("Новый пароль сохранён.");
+                });
+              }}
+            >
+              <p className="muted">
+                Придумайте отдельный пароль не короче 10 символов.
+              </p>
+              <label>
+                Новый пароль
+                <input
+                  name="password"
+                  type="password"
+                  autoComplete="new-password"
+                  minLength={10}
+                  maxLength={128}
+                  required
+                  autoFocus
+                />
+              </label>
+              <label>
+                Повторите пароль
+                <input
+                  name="confirmation"
+                  type="password"
+                  autoComplete="new-password"
+                  minLength={10}
+                  maxLength={128}
+                  required
+                />
+              </label>
+              <button className="button full" disabled={busy}>
+                {busy ? <LoaderCircle className="spin" size={18} /> : <ShieldCheck size={18} />}
+                Сохранить новый пароль
+              </button>
+            </form>
           )}
           {modal === "wallpaper" && (
             <div className="form-stack">
@@ -2444,7 +2638,7 @@ export default function LoveLoom({
           {(modal === "progress" || modal === "about") && (
             <div className="form-stack">
               <p className="handwritten-note">
-                Блокнот для двоих. Версия 0.4 beta.
+                Блокнот для двоих. Версия 0.5 beta.
               </p>
               <p>
                 {preview
@@ -2458,12 +2652,13 @@ export default function LoveLoom({
                   <strong>{cloud ? "Работает в облаке" : "Можно попробовать"}</strong>
                   Регистрация, постоянный вход, комнаты для двоих, чат,
                   календарь, заметки, желания, фильмы, музыка, расстояние и
-                  четыре мини-игры. Добавлены фото, видео, голосовые сообщения,
-                  общий альбом, капсулы времени, сад и тактильный сигнал.
+                  четыре мини-игры. Добавлены фото, видео, совместимые голосовые,
+                  общий альбом, капсулы времени, сад, тактильный сигнал с
+                  сердцами и поцелуями, восстановление доступа и Push для сообщений.
                 </li>
                 <li>
-                  <strong>Следующий этап</strong>Восстановление доступа,
-                  push-уведомления и окончательная настройка фирменной почты.
+                  <strong>Осталось подключить</strong>Фирменный адрес отправителя
+                  после появления домена, удаление аккаунта и уведомления о звонках.
                 </li>
                 <li>
                   <strong>После подключения связи</strong>Аудио- и видеозвонки в

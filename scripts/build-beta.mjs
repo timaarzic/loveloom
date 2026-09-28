@@ -24,6 +24,8 @@ for (const file of [
   "cloud.ts",
   "garden.ts",
   "media.ts",
+  "voice.ts",
+  "push.ts",
 ])
   cpSync(join(root, "lib", file), join(stage, "lib", file));
 for (const file of ["package.json", "tsconfig.json", "next-env.d.ts"])
@@ -41,8 +43,6 @@ writeFileSync(
   join(stage, "next.config.mjs"),
   `export default {output:'export',basePath:${JSON.stringify(base)},images:{unoptimized:true},trailingSlash:true,poweredByHeader:false,turbopack:{root:${JSON.stringify(root)}}};\n`,
 );
-// The beta intentionally stays online-only for now, so no offline worker is copied.
-rmSync(join(stage, "public/sw.js"), { force: true });
 writeFileSync(
   join(stage, "public/manifest.webmanifest"),
   JSON.stringify({
@@ -50,7 +50,9 @@ writeFileSync(
     short_name: "LoveLoom",
     lang: "ru",
     start_url: base + "/",
+    scope: base + "/",
     display: "standalone",
+    description: "Личное пространство LoveLoom для двух людей",
     background_color: "#faf6ee",
     theme_color: "#faf6ee",
     icons: [

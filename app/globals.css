@@ -520,6 +520,12 @@ img {
 .auth-card .local-note {
   margin-top: 22px;
 }
+.auth-recovery {
+  justify-self: end;
+  margin-top: -7px;
+  color: var(--rose);
+  font-size: 12px;
+}
 .local-note svg {
   margin-top: 2px;
 }
@@ -3050,6 +3056,18 @@ body {
   width: min(300px, 68vw);
   height: 44px;
 }
+.voice-loading {
+  width: min(260px, 64vw);
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 11px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface2) 82%, transparent);
+  color: var(--muted);
+  font-size: 12px;
+}
 .message-media .media-caption {
   padding: 2px 7px;
   font-size: 13px;
@@ -3242,6 +3260,63 @@ body {
       translate(calc(-50% + var(--bloom-x)), calc(-50% + var(--bloom-y)))
       scale(0.35)
       rotate(var(--bloom-rotation));
+  }
+}
+.tactile-screen-bloom {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  pointer-events: none;
+  overflow: hidden;
+  contain: strict;
+}
+.screen-love {
+  position: absolute;
+  left: var(--screen-x);
+  top: var(--screen-y);
+  width: var(--screen-size);
+  height: var(--screen-size);
+  color: var(--screen-color);
+  opacity: 0;
+  filter: drop-shadow(0 7px 13px color-mix(in srgb, var(--screen-color) 38%, transparent));
+  animation: screen-love-float var(--screen-duration) cubic-bezier(0.18, 0.8, 0.28, 1) var(--screen-delay) forwards;
+  will-change: transform, opacity;
+}
+.screen-love svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.screen-love-kiss svg path:first-child {
+  fill: currentColor;
+  stroke: #b94d6e;
+  stroke-width: 1.2;
+  stroke-linejoin: round;
+}
+.screen-love-kiss svg path:last-child {
+  fill: none;
+  stroke: #fff6f8;
+  stroke-width: 1.35;
+  stroke-linecap: round;
+  opacity: 0.88;
+}
+@keyframes screen-love-float {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.15) rotate(calc(var(--screen-rotation) - 18deg));
+  }
+  24% {
+    opacity: 0.92;
+    transform: translate(-50%, -50%) scale(1.06) rotate(var(--screen-rotation));
+  }
+  67% { opacity: 0.74; }
+  100% {
+    opacity: 0;
+    transform:
+      translate(calc(-50% + var(--screen-drift-x)), calc(-50% + var(--screen-drift-y)))
+      scale(0.72)
+      rotate(calc(var(--screen-rotation) + 22deg));
   }
 }
 
@@ -3737,10 +3812,15 @@ body {
   .voice-tool.is-recording,
   .tactile-heart.is-sent .tactile-logo,
   .tactile-bloom i,
-  .tactile-wave {
+  .tactile-wave,
+  .screen-love {
     animation: none !important;
   }
   .tactile-bloom {
     opacity: 0.35;
+  }
+  .screen-love {
+    opacity: 0.28;
+    transform: translate(-50%, -50%);
   }
 }

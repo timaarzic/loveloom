@@ -79,6 +79,11 @@ try {
   await page
     .getByRole("button", { name: "Войти в LoveLoom", exact: true })
     .waitFor();
+  const workerUrl = await page.evaluate(async () => {
+    const registration = await navigator.serviceWorker.ready;
+    return registration.active?.scriptURL || "";
+  });
+  assert.match(workerUrl, /\/loveloom\/sw\.js$/);
   await page.evaluate(() => document.fonts.ready);
   assert.ok(await page.evaluate(() => document.fonts.check("700 96px Caveat")));
   assert.equal(await page.locator(".beta-bar").count(), 0);
@@ -91,6 +96,9 @@ try {
   assert.ok(
     await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
   );
+  await page.getByRole("button", { name: "Не помню пароль", exact: true }).click();
+  await page.getByRole("heading", { name: "Вернуть доступ", exact: true }).waitFor();
+  await page.getByRole("button", { name: "Закрыть", exact: true }).click();
   await page.screenshot({
     path: join(output, "01-cloud-welcome-desktop.png"),
     fullPage: true,

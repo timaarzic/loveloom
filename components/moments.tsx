@@ -61,6 +61,19 @@ type BloomParticle = {
 type TactileBloom = {
   id: number;
   particles: BloomParticle[];
+  screenParticles: Array<{
+    id: number;
+    kind: "heart" | "kiss";
+    x: number;
+    y: number;
+    size: number;
+    delay: number;
+    duration: number;
+    rotation: number;
+    driftX: number;
+    driftY: number;
+    color: string;
+  }>;
 };
 
 const bloomColors = ["#f4a9bd", "#edbfd0", "#e88ca8", "#f6cfda", "#d97899"];
@@ -88,6 +101,19 @@ function makeTactileBloom(): TactileBloom {
         color: bloomColors[Math.floor(Math.random() * bloomColors.length)],
       };
     }),
+    screenParticles: Array.from({ length: 18 }, (_, id) => ({
+      id,
+      kind: Math.random() > 0.42 ? "heart" : "kiss",
+      x: 7 + Math.random() * 86,
+      y: 9 + Math.random() * 78,
+      size: 20 + Math.random() * 30,
+      delay: Math.random() * 520,
+      duration: 720 + Math.random() * 650,
+      rotation: -34 + Math.random() * 68,
+      driftX: -38 + Math.random() * 76,
+      driftY: -62 - Math.random() * 54,
+      color: bloomColors[Math.floor(Math.random() * bloomColors.length)],
+    })),
   };
 }
 
@@ -105,6 +131,60 @@ function formatMoment(value: number, timezone: string) {
 function formatBytes(bytes: number) {
   if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} КБ`;
   return `${(bytes / 1024 / 1024).toFixed(bytes > 10 * 1024 * 1024 ? 0 : 1)} МБ`;
+}
+
+function AudioBubble({ media }: { media: MediaItem }) {
+  const [playableUrl, setPlayableUrl] = useState("");
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    if (!media.url) return;
+    let active = true;
+    let objectUrl = "";
+    setPlayableUrl("");
+    setFailed(false);
+    void fetch(media.url)
+      .then((response) => {
+        if (!response.ok) throw new Error("voice download failed");
+        return response.blob();
+      })
+      .then((blob) => {
+        if (blob.size < 1_000) throw new Error("empty voice message");
+        objectUrl = URL.createObjectURL(
+          blob.type === media.mime ? blob : new Blob([blob], { type: media.mime }),
+        );
+        if (active) setPlayableUrl(objectUrl);
+        else URL.revokeObjectURL(objectUrl);
+      })
+      .catch(() => {
+        if (active) setFailed(true);
+      });
+    return () => {
+      active = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [media.mime, media.url]);
+
+  if (failed)
+    return (
+      <span className="media-unavailable">
+        <Cloud size={18} /> Эта старая запись повреждена или временно недоступна
+      </span>
+    );
+  if (!playableUrl)
+    return (
+      <span className="voice-loading">
+        <LoaderCircle className="spin" size={17} /> Готовим голосовое…
+      </span>
+    );
+  return (
+    <audio
+      controls
+      preload="metadata"
+      src={playableUrl}
+      onError={() => setFailed(true)}
+    />
+  );
 }
 
 export function MediaBubble({ media }: { media: MediaItem }) {
@@ -136,9 +216,7 @@ export function MediaBubble({ media }: { media: MediaItem }) {
         </video>
       )}
       {media.kind === "audio" && (
-        <audio controls preload="metadata">
-          <source src={media.url} type={media.mime} />
-        </audio>
+        <AudioBubble media={media} />
       )}
       {media.caption && <p className="media-caption">{media.caption}</p>}
     </div>
@@ -391,6 +469,38 @@ export default function MomentsHub({
 
   return (
     <>
+      {bloom && (
+        <span className="tactile-screen-bloom" key={`screen-${bloom.id}`} aria-hidden="true">
+          {bloom.screenParticles.map((particle) => (
+            <span
+              className={`screen-love screen-love-${particle.kind}`}
+              key={particle.id}
+              style={
+                {
+                  "--screen-x": `${particle.x}%`,
+                  "--screen-y": `${particle.y}%`,
+                  "--screen-size": `${particle.size}px`,
+                  "--screen-delay": `${particle.delay}ms`,
+                  "--screen-duration": `${particle.duration}ms`,
+                  "--screen-rotation": `${particle.rotation}deg`,
+                  "--screen-drift-x": `${particle.driftX}px`,
+                  "--screen-drift-y": `${particle.driftY}px`,
+                  "--screen-color": particle.color,
+                } as CSSProperties
+              }
+            >
+              {particle.kind === "heart" ? (
+                <Heart fill="currentColor" strokeWidth={1.35} />
+              ) : (
+                <svg viewBox="0 0 48 32" role="presentation">
+                  <path d="M2 16C10 10 14 5 23 11C32 5 37 10 46 16C38 27 11 27 2 16Z" />
+                  <path d="M4 16C14 15 18 17 24 16C30 17 35 15 44 16" />
+                </svg>
+              )}
+            </span>
+          ))}
+        </span>
+      )}
       <div className="moments-intro">
         <div>
           <div className="eyebrow">МАЛЕНЬКИЕ РИТУАЛЫ ДЛЯ ДВОИХ</div>

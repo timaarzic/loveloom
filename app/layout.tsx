@@ -7,6 +7,11 @@ export const metadata: Metadata = {
   description: "Ваши разговоры, планы и маленькие истории. В одном месте.",
   icons: { icon: asset("/favicon.svg") },
   manifest: asset("/manifest.webmanifest"),
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "default",
+    title: "LoveLoom",
+  },
   robots: { index: false, follow: false },
 };
 export const viewport: Viewport = {

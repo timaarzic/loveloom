@@ -9,6 +9,13 @@ import type {
   TimeCapsule,
 } from "./types";
 import { mediaExtensions, resolveMediaMime } from "./media";
+import {
+  cloudPushState,
+  disableCloudPush,
+  enableCloudPush,
+  notifyPartnerAboutMessage,
+  type PushState,
+} from "./push";
 
 // Publishable keys are intentionally safe to ship in a browser bundle. All
 // authorization is enforced by Postgres functions and RLS, never by this key.
@@ -141,10 +148,10 @@ function appUrl() {
   return url.toString();
 }
 
-export function onCloudAuthChange(refresh: () => void) {
-  const { data } = cloud().auth.onAuthStateChange(() => {
+export function onCloudAuthChange(refresh: (event: string) => void) {
+  const { data } = cloud().auth.onAuthStateChange((event) => {
     // Supabase recommends deferring follow-up client calls from this callback.
-    window.setTimeout(refresh, 0);
+    window.setTimeout(() => refresh(event), 0);
   });
   return () => data.subscription.unsubscribe();
 }
@@ -199,6 +206,27 @@ export async function cloudApi(
     return { ok: true };
   }
 
+  if (route === "auth/recovery") {
+    const email = String(data.email || "").trim().toLowerCase();
+    if (!email) throw new Error("Укажите электронную почту.");
+    const redirect = new URL(appUrl());
+    redirect.searchParams.set("recovery", "1");
+    const { error } = await cloud().auth.resetPasswordForEmail(email, {
+      redirectTo: redirect.toString(),
+    });
+    if (error) friendly(error);
+    return { ok: true };
+  }
+
+  if (route === "auth/update-password") {
+    const password = String(data.password || "");
+    if (password.length < 10)
+      throw new Error("Пароль должен содержать не менее 10 символов.");
+    const { error } = await cloud().auth.updateUser({ password });
+    if (error) friendly(error);
+    return { ok: true };
+  }
+
   if (route === "auth/login") {
     const { error } = await cloud().auth.signInWithPassword({
       email: String(data.email || "").trim().toLowerCase(),
@@ -209,6 +237,7 @@ export async function cloudApi(
   }
 
   if (route === "auth/logout") {
+    await disableCloudPush(cloud()).catch(() => {});
     const { error } = await cloud().auth.signOut({ scope: "local" });
     if (error) friendly(error);
     signedMediaCache.clear();
@@ -280,11 +309,12 @@ export async function cloudApi(
       result.messages = await signMessages(result.messages);
       return result;
     }
-    await rpc("loveloom_add_message", {
+    const messageId = String(await rpc("loveloom_add_message", {
       p_epoch: Number(data.epoch),
       p_text: String(data.text || ""),
-    });
-    return { ok: true };
+    }));
+    await notifyPartnerAboutMessage(cloud(), messageId).catch(() => {});
+    return { ok: true, messageId };
   }
 
   if (route === "media") {
@@ -324,7 +354,7 @@ export async function cloudApi(
     });
     if (uploadError) friendly(uploadError);
     try {
-      await rpc("loveloom_register_media", {
+      const registeredId = String(await rpc("loveloom_register_media", {
         p_id: id,
         p_epoch: Number(data.epoch),
         p_path: storagePath,
@@ -333,7 +363,9 @@ export async function cloudApi(
         p_mime: mime,
         p_bytes: file.size,
         p_caption: String(data.caption || ""),
-      });
+      }));
+      if (context === "chat")
+        await notifyPartnerAboutMessage(cloud(), registeredId).catch(() => {});
     } catch (error) {
       await bucket.remove([storagePath]).catch(() => {});
       throw error;
@@ -353,6 +385,21 @@ export async function cloudApi(
       },
     ]);
     return { ok: true, item };
+  }
+
+  if (route === "push") {
+    const action = String(data.action || "status");
+    if (action === "status")
+      return { state: (await cloudPushState(cloud())) as PushState };
+    if (action === "enable") {
+      await enableCloudPush(cloud());
+      return { state: "enabled" as PushState };
+    }
+    if (action === "disable") {
+      await disableCloudPush(cloud());
+      return { state: "disabled" as PushState };
+    }
+    throw new Error("Неизвестная настройка уведомлений.");
   }
 
   if (route === "capsules") {

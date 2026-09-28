@@ -69,6 +69,12 @@ import {
 import { registerLoveLoomWorker, type PushState } from "@/lib/push";
 import MomentsHub, { MediaBubble } from "@/components/moments";
 type Tab = "home" | "chat" | "together" | "games" | "settings";
+type LocationPermission =
+  | "checking"
+  | "prompt"
+  | "granted"
+  | "denied"
+  | "unsupported";
 type Modal =
   | "create"
   | "join"
@@ -292,6 +298,9 @@ export default function LoveLoom({
     [wallpaper, setWallpaper] = useState<Wallpaper>("rose-mist"),
     [recording, setRecording] = useState(false),
     [pushState, setPushState] = useState<PushState>("checking");
+  const [unreadMessages, setUnreadMessages] = useState(0),
+    [locationPermission, setLocationPermission] =
+      useState<LocationPermission>("checking");
   const [roomCode, setRoomCode] = useState(""),
     [reveal, setReveal] = useState(false),
     [entry, setEntry] = useState<Entry | null>(null);
@@ -318,8 +327,10 @@ export default function LoveLoom({
     toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null),
     chatMediaInput = useRef<HTMLInputElement>(null),
     voiceRecorder = useRef<PcmVoiceRecorder | null>(null),
-    voiceLimitTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    voiceLimitTimer = useRef<ReturnType<typeof setTimeout> | null>(null),
+    activeTab = useRef(tab);
   snapshot.current = s;
+  activeTab.current = tab;
   useEffect(() => {
     document.body.classList.toggle("preview-mode", preview);
     document.body.classList.toggle("cloud-mode", cloud);
@@ -381,6 +392,7 @@ export default function LoveLoom({
         (old.id !== state.room?.id || old.epoch !== state.room?.epoch)
       ) {
         setMessages([]);
+        setUnreadMessages(0);
         setGame(null);
         setModal(null);
         tell("Состояние комнаты изменилось. Общая история обновлена.");
@@ -452,15 +464,23 @@ export default function LoveLoom({
     }
     let active = true;
     setPushState("checking");
-    void api("push", { action: "status" })
-      .then((result) => {
-        if (active) setPushState(result.state as PushState);
-      })
-      .catch(() => {
-        if (active) setPushState("disabled");
-      });
+    const check = () => {
+      if (document.visibilityState !== "visible") return;
+      void api("push", { action: "status" })
+        .then((result) => {
+          if (active) setPushState(result.state as PushState);
+        })
+        .catch(() => {
+          if (active) setPushState("disabled");
+        });
+    };
+    check();
+    const timer = setInterval(check, 2 * 60_000);
+    document.addEventListener("visibilitychange", check);
     return () => {
       active = false;
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", check);
     };
   }, [api, cloud, s.room?.id, s.user?.id]);
   useEffect(() => {
@@ -515,8 +535,29 @@ export default function LoveLoom({
         return [...byId.values()].sort((a, b) => a.seq - b.seq);
       });
       setHasMore((prev) => prev || result.hasMore);
+      if (cloud && activeTab.current === "chat") {
+        const lastSeq = Number(result.messages.at(-1)?.seq || 0);
+        await api("messages/read", {
+          epoch: room.epoch,
+          lastSeq,
+        });
+        if (snapshot.current.room?.id === room.id) setUnreadMessages(0);
+      }
     } catch {}
-  }, [api]);
+  }, [api, cloud]);
+  const fetchUnread = useCallback(async () => {
+    const room = snapshot.current.room;
+    if (!cloud || !room || activeTab.current === "chat") return;
+    try {
+      const result = await api("messages/unread", { epoch: room.epoch });
+      if (
+        snapshot.current.room?.id === room.id &&
+        snapshot.current.room.epoch === Number(result.epoch) &&
+        (activeTab.current as Tab) !== "chat"
+      )
+        setUnreadMessages(Math.max(0, Number(result.unread || 0)));
+    } catch {}
+  }, [api, cloud]);
   useEffect(() => {
     if (!s.room) return;
     if (tab === "chat") {
@@ -534,6 +575,55 @@ export default function LoveLoom({
       return () => clearInterval(timer);
     }
   }, [s.room?.id, s.room?.epoch, tab, api, fetchMessages]);
+  useEffect(() => {
+    if (!cloud || !s.room) {
+      setUnreadMessages(0);
+      return;
+    }
+    if (tab === "chat") return;
+    const run = () => {
+      if (document.visibilityState === "visible") void fetchUnread();
+    };
+    run();
+    const timer = setInterval(run, 2500);
+    document.addEventListener("visibilitychange", run);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", run);
+    };
+  }, [cloud, s.room?.id, s.room?.epoch, tab, fetchUnread]);
+  useEffect(() => {
+    if (modal !== "location") return;
+    let active = true;
+    let permission: PermissionStatus | null = null;
+    if (!navigator.geolocation || !window.isSecureContext) {
+      setLocationPermission("unsupported");
+      return;
+    }
+    setLocationPermission("checking");
+    if (!navigator.permissions) {
+      setLocationPermission("prompt");
+      return;
+    }
+    void navigator.permissions
+      .query({ name: "geolocation" })
+      .then((result) => {
+        if (!active) return;
+        permission = result;
+        const sync = () => {
+          if (active) setLocationPermission(result.state);
+        };
+        sync();
+        result.onchange = sync;
+      })
+      .catch(() => {
+        if (active) setLocationPermission("prompt");
+      });
+    return () => {
+      active = false;
+      if (permission) permission.onchange = null;
+    };
+  }, [modal]);
   useEffect(() => {
     if (tab === "chat" && stick.current)
       chatBottom.current?.scrollIntoView({ behavior: "instant" });
@@ -609,7 +699,10 @@ export default function LoveLoom({
   }
   function jump(t: Tab) {
     setTab(t);
-    if (t === "chat") stick.current = true;
+    if (t === "chat") {
+      stick.current = true;
+      setUnreadMessages(0);
+    }
     window.scrollTo({ top: 0, behavior: "instant" });
   }
   const themeButton = (
@@ -750,6 +843,53 @@ export default function LoveLoom({
           : "Push выключены на этом устройстве.",
       );
     });
+  }
+
+  async function shareLocation() {
+    if (!room) return;
+    if (preview)
+      throw new Error(
+        "В дизайн-бете геолокация не собирается. Настоящий расчёт доступен в облачной версии.",
+      );
+    if (!window.isSecureContext)
+      throw new Error(
+        "Геолокация работает только по защищённой HTTPS-ссылке LoveLoom.",
+      );
+    if (!navigator.geolocation)
+      throw new Error("Этот браузер не поддерживает геолокацию.");
+    if (locationPermission === "denied")
+      throw new Error(
+        "Геолокация запрещена. Нажмите значок настроек слева от адреса сайта → «Разрешения» → «Местоположение» → «Разрешить», затем обновите страницу.",
+      );
+
+    const position = await new Promise<GeolocationPosition>((resolve, reject) =>
+      navigator.geolocation.getCurrentPosition(
+        resolve,
+        (error) => {
+          const message =
+            error.code === 1
+              ? "Выберите «Разрешить» в окне браузера. Если окно не появляется, откройте разрешения сайта слева от адресной строки."
+              : error.code === 2
+                ? "Браузер не смог определить местоположение. Включите геолокацию устройства и повторите."
+                : "Определение местоположения заняло слишком много времени. Повторите ещё раз.";
+          reject(new Error(message));
+        },
+        {
+          enableHighAccuracy: false,
+          timeout: 15000,
+          maximumAge: 60000,
+        },
+      ),
+    );
+    setLocationPermission("granted");
+    await api("location", {
+      lat: Math.round(position.coords.latitude * 10) / 10,
+      lon: Math.round(position.coords.longitude * 10) / 10,
+      consent: true,
+      epoch: room.epoch,
+    });
+    await refresh();
+    tell("Примерное местоположение обновлено.");
   }
 
   if (loading)
@@ -1078,8 +1218,20 @@ export default function LoveLoom({
                   className={`nav-item ${tab === id ? "active" : ""}`}
                   onClick={() => jump(id)}
                   aria-current={tab === id ? "page" : undefined}
+                  aria-label={
+                    id === "chat" && unreadMessages
+                      ? `${name}, непрочитанных сообщений: ${unreadMessages}`
+                      : name
+                  }
                 >
-                  <Icon size={21} strokeWidth={1.7} />
+                  <span className="nav-icon-wrap">
+                    <Icon size={21} strokeWidth={1.7} />
+                    {id === "chat" && unreadMessages > 0 && (
+                      <span className="nav-unread-badge" aria-hidden="true">
+                        {unreadMessages > 99 ? "99+" : unreadMessages}
+                      </span>
+                    )}
+                  </span>
                   <span>{name}</span>
                   {tab === id && <span className="nav-indicator" />}
                 </button>
@@ -2321,9 +2473,23 @@ export default function LoveLoom({
                 key={id}
                 className={tab === id ? "active" : ""}
                 aria-current={tab === id ? "page" : undefined}
+                aria-label={
+                  id === "chat" && unreadMessages
+                    ? `${name}, непрочитанных сообщений: ${unreadMessages}`
+                    : id === "settings"
+                      ? "Профиль"
+                      : name
+                }
                 onClick={() => jump(id)}
               >
-                <Icon size={21} />
+                <span className="nav-icon-wrap">
+                  <Icon size={21} />
+                  {id === "chat" && unreadMessages > 0 && (
+                    <span className="nav-unread-badge" aria-hidden="true">
+                      {unreadMessages > 99 ? "99+" : unreadMessages}
+                    </span>
+                  )}
+                </span>
                 <span>{id === "settings" ? "Профиль" : name}</span>
               </button>
             ))}
@@ -2974,44 +3140,31 @@ export default function LoveLoom({
                   {new Date(s.locationUpdated).toLocaleString("ru")}
                 </small>
               )}
+              {locationPermission === "prompt" && (
+                <div className="inline-notice">
+                  <Info size={18} />
+                  После нажатия браузер покажет запрос. Выберите «Разрешить при
+                  использовании сайта» — координаты не обновляются в фоне.
+                </div>
+              )}
+              {locationPermission === "denied" && (
+                <div className="inline-notice warning">
+                  <Info size={18} />
+                  Доступ уже запрещён. Нажмите значок настроек слева от адреса
+                  сайта, разрешите «Местоположение» и обновите страницу.
+                </div>
+              )}
+              {locationPermission === "unsupported" && (
+                <div className="inline-notice warning">
+                  <Info size={18} />
+                  Откройте LoveLoom по защищённой HTTPS-ссылке в Chrome, Safari
+                  или другом современном браузере.
+                </div>
+              )}
               <button
                 className="button full"
                 disabled={busy}
-                onClick={() =>
-                  void act(async () => {
-                    if (preview)
-                      throw new Error(
-                        "В дизайн-бете геолокация не собирается. Можно оценить виджет; настоящий расчёт расстояния будет доступен после подключения сервера.",
-                      );
-                    if (!navigator.geolocation)
-                      throw new Error("Браузер не поддерживает геолокацию.");
-                    const pos = await new Promise<GeolocationPosition>(
-                      (resolve, reject) =>
-                        navigator.geolocation.getCurrentPosition(
-                          resolve,
-                          () =>
-                            reject(
-                              new Error(
-                                "Доступ не получен. Проверьте разрешение браузера.",
-                              ),
-                            ),
-                          {
-                            enableHighAccuracy: false,
-                            timeout: 12000,
-                            maximumAge: 60000,
-                          },
-                        ),
-                    );
-                    await api("location", {
-                      lat: Math.round(pos.coords.latitude * 10) / 10,
-                      lon: Math.round(pos.coords.longitude * 10) / 10,
-                      consent: true,
-                      epoch: room.epoch,
-                    });
-                    await refresh();
-                    tell("Примерное местоположение обновлено.");
-                  })
-                }
+                onClick={() => void act(shareLocation)}
               >
                 <MapPin size={17} />
                 {s.locationShared

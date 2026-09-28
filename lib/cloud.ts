@@ -317,6 +317,19 @@ export async function cloudApi(
     return { ok: true, messageId };
   }
 
+  if (route === "messages/unread") {
+    return rpc("loveloom_chat_unread", {
+      p_epoch: Number(data.epoch),
+    });
+  }
+
+  if (route === "messages/read") {
+    return rpc("loveloom_mark_chat_read", {
+      p_epoch: Number(data.epoch),
+      p_last_seq: Number(data.lastSeq),
+    });
+  }
+
   if (route === "media") {
     if (input === undefined) {
       const query = new URLSearchParams(path.split("?")[1] || "");

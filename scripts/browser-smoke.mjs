@@ -248,6 +248,23 @@ try {
   console.log(
     "PASS: desktop and mobile rendering, no horizontal overflow; light/dark themes.",
   );
+  await ctxA.grantPermissions(["geolocation"], { origin: base });
+  await ctxA.setGeolocation({ latitude: 55.7558, longitude: 37.6173 });
+  await a.getByRole("button", { name: "Поделиться", exact: true }).click();
+  await a
+    .getByRole("button", { name: "Разрешить и поделиться", exact: true })
+    .click();
+  await a
+    .getByText("Примерное местоположение обновлено.", { exact: true })
+    .waitFor();
+  const locationState = await ctxA.request
+    .get(base + "/api/state")
+    .then((r) => r.json());
+  assert.equal(locationState.locationShared, true);
+  await a.getByRole("button", { name: "Закрыть", exact: true }).click();
+  console.log(
+    "PASS: geolocation starts from a user click and persists only the consented approximate location.",
+  );
   await a
     .getByRole("button", { name: "Для двоих", exact: true })
     .first()

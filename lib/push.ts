@@ -45,14 +45,15 @@ export async function registerLoveLoomWorker() {
   if (!("serviceWorker" in navigator)) return null;
   return navigator.serviceWorker.register(asset("/sw.js"), {
     scope: asset("/"),
+    updateViaCache: "none",
   });
 }
 
 async function worker() {
   const registration = await registerLoveLoomWorker();
   if (!registration) throw new Error("Service Worker недоступен.");
-  await navigator.serviceWorker.ready;
-  return registration;
+  await registration.update().catch(() => {});
+  return navigator.serviceWorker.ready;
 }
 
 async function saveSubscription(client: SupabaseClient, subscription: PushSubscription) {
@@ -67,13 +68,73 @@ async function saveSubscription(client: SupabaseClient, subscription: PushSubscr
   if (error) throw error;
 }
 
+async function hasSavedSubscription(
+  client: SupabaseClient,
+  subscription: PushSubscription,
+) {
+  const { data, error } = await client.rpc(
+    "loveloom_has_push_subscription",
+    { p_endpoint: subscription.endpoint },
+  );
+  if (error) throw error;
+  return data === true;
+}
+
+async function publicKey(client: SupabaseClient) {
+  const { data, error } = await client.functions.invoke("loveloom-push", {
+    body: { action: "key" },
+  });
+  if (error || !data?.publicKey)
+    throw new Error("Не удалось подготовить защищённую Push-подписку.");
+  return String(data.publicKey);
+}
+
+async function createSubscription(
+  client: SupabaseClient,
+  registration: ServiceWorkerRegistration,
+) {
+  return registration.pushManager.subscribe({
+    userVisibleOnly: true,
+    applicationServerKey: urlBase64ToBytes(await publicKey(client)),
+  });
+}
+
+async function removeSavedSubscription(
+  client: SupabaseClient,
+  subscription: PushSubscription,
+) {
+  const { error } = await client.rpc("loveloom_remove_push_subscription", {
+    p_endpoint: subscription.endpoint,
+  });
+  if (error) throw error;
+}
+
+async function renewSubscription(
+  client: SupabaseClient,
+  registration: ServiceWorkerRegistration,
+  current: PushSubscription | null,
+) {
+  if (current) {
+    await removeSavedSubscription(client, current).catch(() => {});
+    await current.unsubscribe().catch(() => false);
+  }
+  const subscription = await createSubscription(client, registration);
+  await saveSubscription(client, subscription);
+  return subscription;
+}
+
 export async function cloudPushState(client: SupabaseClient): Promise<PushState> {
   if (needsIosInstallation()) return "install-required";
   if (!pushSupported()) return "unsupported";
   if (Notification.permission === "denied") return "denied";
   const registration = await worker();
-  const subscription = await registration.pushManager.getSubscription();
+  let subscription = await registration.pushManager.getSubscription();
   if (!subscription) return "disabled";
+  const saved = await hasSavedSubscription(client, subscription);
+  if (!saved) {
+    if (Notification.permission !== "granted") return "disabled";
+    subscription = await renewSubscription(client, registration, subscription);
+  }
   await saveSubscription(client, subscription);
   return "enabled";
 }
@@ -94,19 +155,18 @@ export async function enableCloudPush(client: SupabaseClient) {
     );
 
   const registration = await worker();
-  let subscription = await registration.pushManager.getSubscription();
-  if (!subscription) {
-    const { data, error } = await client.functions.invoke("loveloom-push", {
-      body: { action: "key" },
-    });
-    if (error || !data?.publicKey)
-      throw new Error("Не удалось подготовить защищённую Push-подписку.");
-    subscription = await registration.pushManager.subscribe({
-      userVisibleOnly: true,
-      applicationServerKey: urlBase64ToBytes(String(data.publicKey)),
-    });
+  const existing = await registration.pushManager.getSubscription();
+  const subscription = await renewSubscription(client, registration, existing);
+  const test = await client.functions.invoke("loveloom-push", {
+    body: { action: "test" },
+  });
+  if (test.error || Number(test.data?.delivered || 0) < 1) {
+    await removeSavedSubscription(client, subscription).catch(() => {});
+    await subscription.unsubscribe().catch(() => false);
+    throw new Error(
+      "Браузер не подтвердил Push-подписку. Проверьте системное разрешение уведомлений и попробуйте снова.",
+    );
   }
-  await saveSubscription(client, subscription);
 }
 
 export async function disableCloudPush(client: SupabaseClient) {
@@ -114,19 +174,18 @@ export async function disableCloudPush(client: SupabaseClient) {
   const registration = await worker();
   const subscription = await registration.pushManager.getSubscription();
   if (!subscription) return;
-  const { error } = await client.rpc("loveloom_remove_push_subscription", {
-    p_endpoint: subscription.endpoint,
-  });
+  const removal = removeSavedSubscription(client, subscription);
   await subscription.unsubscribe();
-  if (error) throw error;
+  await removal;
 }
 
 export async function notifyPartnerAboutMessage(
   client: SupabaseClient,
   messageId: string,
 ) {
-  const { error } = await client.functions.invoke("loveloom-push", {
+  const { data, error } = await client.functions.invoke("loveloom-push", {
     body: { action: "send-message", messageId },
   });
   if (error) throw error;
+  return data as { delivered?: number; expired?: number; failed?: number };
 }

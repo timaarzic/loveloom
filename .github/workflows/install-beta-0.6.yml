@@ -1,0 +1,35 @@
+name: Install LoveLoom beta 0.6
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "release-beta-0.6.b64"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  install:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+      - name: Verify and install beta 0.6
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 --decode release-beta-0.6.b64 > /tmp/loveloom-beta-0.6.tar.gz
+          echo "e38358a393e7882c681c553c71a7e276593443f3911662bcae7c809c02a61578  /tmp/loveloom-beta-0.6.tar.gz" | sha256sum --check -
+          tar -xzf /tmp/loveloom-beta-0.6.tar.gz
+          rm release-beta-0.6.b64
+          rm .github/workflows/install-beta-0.6.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "feat: release LoveLoom beta 0.6"
+          git push origin HEAD:main

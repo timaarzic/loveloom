@@ -4,6 +4,11 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store, normalizedCode } from "../lib/store.ts";
+import {
+  correctGameAnswer,
+  GAME_KINDS,
+  GAME_QUESTIONS,
+} from "../lib/game-content.ts";
 async function fixture() {
   const path = mkdtempSync(join(tmpdir(), "loveloom-test-"));
   const db = new Store(path);
@@ -72,6 +77,101 @@ test("messages isolate rooms, persist across reopen, paginate without duplicates
   const again = new Store(path);
   assert.equal(again.messages(b.id).messages.at(-1)?.text, "Message 44");
   again.close();
+});
+test("threaded chat validates replies, groups reactions and tracks reads", async () => {
+  const { db, a, b, c, code, epoch } = await fixture();
+  db.joinRoom(b.id, { code });
+  db.createRoom(c.id, { code: "SEPARATE-THREAD-ROOM" });
+
+  const firstId = db.addMessage(a.id, { text: "Первое", epoch });
+  const replyId = db.addMessage(b.id, {
+    text: "Ответ",
+    replyTo: firstId,
+    epoch,
+  });
+  const otherRoomMessage = db.addMessage(c.id, {
+    text: "Чужая комната",
+    epoch,
+  });
+
+  const thread = db.messages(a.id);
+  assert.deepEqual(
+    thread.messages.find((message) => message.id === replyId)?.reply,
+    {
+      id: firstId,
+      author: a.id,
+      text: "Первое",
+      mediaKind: null,
+    },
+  );
+  assert.throws(
+    () =>
+      db.addMessage(a.id, {
+        text: "Нельзя ответить",
+        replyTo: otherRoomMessage,
+        epoch,
+      }),
+    /недоступно/,
+  );
+
+  db.reactMessage(a.id, { id: firstId, emoji: "💗", epoch });
+  db.reactMessage(b.id, { id: firstId, emoji: "💗", epoch });
+  assert.equal(
+    db.messages(a.id).messages.find((message) => message.id === firstId)
+      ?.reactions?.[0].users.length,
+    2,
+  );
+  db.reactMessage(a.id, { id: firstId, emoji: "💗", epoch });
+  assert.equal(
+    db.messages(a.id).messages.find((message) => message.id === firstId)
+      ?.reactions?.[0].users.length,
+    1,
+  );
+  assert.throws(
+    () => db.reactMessage(a.id, { id: firstId, emoji: "🔥", epoch }),
+    /не поддерживается/,
+  );
+  assert.throws(
+    () => db.reactMessage(c.id, { id: firstId, emoji: "💗", epoch }),
+    /недоступно/,
+  );
+
+  const unread = db.chatUnread(b.id, { epoch });
+  assert.equal(unread.unread, 1);
+  assert.equal(unread.latestSeq, thread.messages.at(-1)?.seq);
+  const marked = db.markChatRead(b.id, {
+    epoch,
+    lastSeq: unread.latestSeq,
+  });
+  assert.equal(marked.lastReadSeq, unread.latestSeq);
+  assert.equal(db.chatUnread(b.id, { epoch }).unread, 0);
+  assert.equal(db.messages(a.id).partnerReadSeq, unread.latestSeq);
+  db.close();
+});
+test("chat retains 1000 newest messages and safely clears expired reply previews", async () => {
+  const { db, a, b, code, epoch } = await fixture();
+  db.joinRoom(b.id, { code });
+  const oldestId = db.addMessage(a.id, { text: "Message 0", epoch });
+  for (let index = 1; index < 1000; index += 1)
+    db.addMessage(a.id, { text: `Message ${index}`, epoch });
+  const replyId = db.addMessage(b.id, {
+    text: "Newest reply",
+    replyTo: oldestId,
+    epoch,
+  });
+  const count = db.db
+    .prepare("SELECT COUNT(*) AS count FROM messages WHERE room=?")
+    .get(db.roomFor(a.id)!.id) as { count: number };
+  assert.equal(count.count, 1000);
+  assert.equal(
+    db.db.prepare("SELECT 1 FROM messages WHERE id=?").get(oldestId),
+    undefined,
+  );
+  assert.equal(
+    db.messages(b.id).messages.find((message) => message.id === replyId)?.reply,
+    null,
+  );
+  db.close();
 });
 test("leave destroys shared records, rejects stale writes, allows empty rejoin", async () => {
   const { db, a, b, code, epoch } = await fixture();
@@ -153,7 +253,28 @@ test("answers are hidden until both respond; no double answering", async () => {
   db.answerGame(b.id, { id: game.id, answer: game.choices[1], epoch });
   assert.equal(db.gameState(a.id)?.complete, true);
   assert.ok(db.gameState(a.id)?.responses.every((r) => r.answer !== null));
+  db.startGame(a.id, { kind: "either", epoch });
+  assert.notEqual(db.gameState(a.id)?.question, game.question);
   db.close();
+});
+test("each pair game has 20 unique validated questions", () => {
+  for (const kind of GAME_KINDS) {
+    const questions = GAME_QUESTIONS[kind];
+    assert.equal(questions.length, 20, `${kind} must contain 20 questions`);
+    assert.equal(
+      new Set(questions.map((question) => question.question)).size,
+      20,
+      `${kind} questions must be unique`,
+    );
+    for (const question of questions) {
+      assert.ok(question.choices.length >= 2 && question.choices.length <= 4);
+      assert.equal(new Set(question.choices).size, question.choices.length);
+    }
+  }
+  for (const question of GAME_QUESTIONS.quiz)
+    assert.ok(
+      (question.choices as readonly string[]).includes(question.correctAnswer),
+    );
 });
 test("explicit geolocation consent, server rounding, no coordinates in snapshot", async () => {
   const { db, a, b, code, epoch } = await fixture();
@@ -225,7 +346,8 @@ test("quiz solution is revealed only after both answers", async () => {
   db.answerGame(a.id, { id: game.id, answer: game.choices[0], epoch });
   assert.equal(db.gameState(b.id)?.correctAnswer, null);
   db.answerGame(b.id, { id: game.id, answer: game.choices[1], epoch });
-  const expected = game.question.includes("океан") ? "Тихий" : "Меркурий";
+  const expected = correctGameAnswer(game.question);
+  assert.ok(expected);
   assert.equal(db.gameState(a.id)?.correctAnswer, expected);
   assert.equal(db.gameState(b.id)?.correctAnswer, expected);
   db.close();

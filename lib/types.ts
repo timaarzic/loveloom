@@ -33,6 +33,30 @@ export type Message = {
   text: string;
   created: number;
   media?: MediaItem | null;
+  reply?: MessageReply | null;
+  reactions?: MessageReaction[];
+};
+
+export type MessageReply = {
+  id: string;
+  author: string;
+  text: string;
+  mediaKind: MediaKind | null;
+};
+
+export type MessageReaction = {
+  emoji: MessageReactionEmoji;
+  users: string[];
+};
+
+export const MESSAGE_REACTIONS = ["💗", "😘", "😂", "🥹", "🤗", "👍"] as const;
+export type MessageReactionEmoji = (typeof MESSAGE_REACTIONS)[number];
+
+export type MessagePage = {
+  messages: Message[];
+  hasMore: boolean;
+  epoch: number;
+  partnerReadSeq: number;
 };
 
 export type MediaKind = "image" | "video" | "audio";
@@ -79,7 +103,7 @@ export type Snapshot = {
 };
 export type Game = {
   id: string;
-  kind: string;
+  kind: "know" | "quiz" | "either" | "date";
   question: string;
   choices: string[];
   responses: { user: string; answer: string | null; guess: string | null }[];

@@ -11,15 +11,24 @@ import {
 } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve, join } from "node:path";
-import type {
-  User,
-  Room,
-  Entry,
-  EntryKind,
-  Message,
-  Snapshot,
-  Game,
+import {
+  MESSAGE_REACTIONS,
+  type MessageReactionEmoji,
+  type User,
+  type Room,
+  type Entry,
+  type EntryKind,
+  type Message,
+  type MessagePage,
+  type Snapshot,
+  type Game,
 } from "./types.ts";
+import {
+  correctGameAnswer,
+  isGameKind,
+  randomGameQuestion,
+  type GameKind,
+} from "./game-content.ts";
 
 // LOCAL-ONLY alpha adapter. A persistent server disk is required. Do not deploy
 // this adapter to Vercel/serverless. Production Supabase remains a separate stage.
@@ -118,8 +127,11 @@ export class Store {
       CREATE TABLE IF NOT EXISTS rooms(id TEXT PRIMARY KEY,owner TEXT NOT NULL REFERENCES users(id),fingerprint TEXT NOT NULL UNIQUE,code TEXT NOT NULL,start TEXT NOT NULL,timezone TEXT NOT NULL,created INTEGER NOT NULL,epoch INTEGER NOT NULL DEFAULT 1,billing TEXT NOT NULL DEFAULT 'free');
       CREATE TABLE IF NOT EXISTS members(user TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,room TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,nickname TEXT NOT NULL DEFAULT '');
       CREATE TRIGGER IF NOT EXISTS maximum_two BEFORE INSERT ON members WHEN (SELECT COUNT(*) FROM members WHERE room=NEW.room)>=2 BEGIN SELECT RAISE(ABORT,'ROOM_FULL'); END;
-      CREATE TABLE IF NOT EXISTS messages(seq INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT NOT NULL UNIQUE,room TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,author TEXT NOT NULL REFERENCES users(id),text TEXT NOT NULL,created INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS messages(seq INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT NOT NULL UNIQUE,room TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,author TEXT NOT NULL REFERENCES users(id),text TEXT NOT NULL,created INTEGER NOT NULL,reply_to TEXT REFERENCES messages(id) ON DELETE SET NULL);
       CREATE INDEX IF NOT EXISTS messages_room_seq ON messages(room,seq);
+      CREATE TABLE IF NOT EXISTS message_reactions(message TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,user TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,emoji TEXT NOT NULL,created INTEGER NOT NULL,PRIMARY KEY(message,user));
+      CREATE INDEX IF NOT EXISTS message_reactions_message ON message_reactions(message,created);
+      CREATE TABLE IF NOT EXISTS chat_reads(room TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,user TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,last_read_seq INTEGER NOT NULL DEFAULT 0,updated INTEGER NOT NULL,PRIMARY KEY(room,user));
       CREATE TABLE IF NOT EXISTS entries(id TEXT PRIMARY KEY,room TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,author TEXT NOT NULL REFERENCES users(id),kind TEXT NOT NULL,title TEXT NOT NULL,body TEXT NOT NULL,date TEXT NOT NULL,done INTEGER NOT NULL DEFAULT 0,created INTEGER NOT NULL,version INTEGER NOT NULL DEFAULT 1);
       CREATE INDEX IF NOT EXISTS entries_room ON entries(room,created);
       CREATE TABLE IF NOT EXISTS locations(user TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,room TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,lat REAL NOT NULL,lon REAL NOT NULL,updated INTEGER NOT NULL);
@@ -129,6 +141,13 @@ export class Store {
       CREATE TABLE IF NOT EXISTS admin(id INTEGER PRIMARY KEY CHECK(id=1),password TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS admin_sessions(token TEXT PRIMARY KEY,expires INTEGER NOT NULL);
     `);
+    const messageColumns = this.db.prepare("PRAGMA table_info(messages)").all() as {
+      name: string;
+    }[];
+    if (!messageColumns.some((column) => column.name === "reply_to"))
+      this.db.exec(
+        "ALTER TABLE messages ADD COLUMN reply_to TEXT REFERENCES messages(id) ON DELETE SET NULL",
+      );
   }
   tx<T>(action: () => T) {
     this.db.exec("BEGIN IMMEDIATE");
@@ -380,6 +399,7 @@ export class Store {
         throw new AppError("Подтвердите удаление истории.");
       for (const table of ["messages", "entries", "locations", "games"])
         this.db.prepare(`DELETE FROM ${table} WHERE room=?`).run(room.id);
+      this.db.prepare("DELETE FROM chat_reads WHERE room=?").run(room.id);
       this.db.prepare("DELETE FROM members WHERE user=?").run(user);
       this.db
         .prepare("UPDATE members SET nickname='' WHERE room=?")
@@ -419,29 +439,161 @@ export class Store {
       }
     });
   }
-  messages(user: string, before?: number) {
+  messages(user: string, before?: number): MessagePage {
     const room = this.requireRoom(user);
     const rows = this.db
       .prepare(
-        "SELECT seq,id,author,text,created FROM messages WHERE room=? AND seq<? ORDER BY seq DESC LIMIT 41",
+        `SELECT m.seq,m.id,m.author,m.text,m.created,m.reply_to,
+          replied.author AS reply_author,replied.text AS reply_text
+         FROM messages m
+         LEFT JOIN messages replied ON replied.id=m.reply_to AND replied.room=m.room
+         WHERE m.room=? AND m.seq<? ORDER BY m.seq DESC LIMIT 41`,
       )
-      .all(room.id, before || Number.MAX_SAFE_INTEGER) as Message[];
+      .all(room.id, before || Number.MAX_SAFE_INTEGER) as unknown as (Message & {
+        reply_to: string | null;
+        reply_author: string | null;
+        reply_text: string | null;
+      })[];
     const hasMore = rows.length > 40;
+    const page = rows.slice(0, 40).reverse().map((message) => {
+      const reactions = this.db
+        .prepare(
+          "SELECT emoji,user FROM message_reactions WHERE message=? ORDER BY created",
+        )
+        .all(message.id) as { emoji: MessageReactionEmoji; user: string }[];
+      const grouped = new Map<MessageReactionEmoji, string[]>();
+      for (const reaction of reactions)
+        grouped.set(reaction.emoji, [
+          ...(grouped.get(reaction.emoji) || []),
+          reaction.user,
+        ]);
+      return {
+        seq: message.seq,
+        id: message.id,
+        author: message.author,
+        text: message.text,
+        created: message.created,
+        media: null,
+        reply: message.reply_to
+          ? {
+              id: message.reply_to,
+              author: message.reply_author || "",
+              text: message.reply_text || "",
+              mediaKind: null,
+            }
+          : null,
+        reactions: [...grouped.entries()].map(([emoji, users]) => ({
+          emoji,
+          users,
+        })),
+      };
+    });
+    const partnerRead = this.db
+      .prepare("SELECT MAX(last_read_seq) AS seq FROM chat_reads WHERE room=? AND user<>?")
+      .get(room.id, user) as { seq: number | null } | undefined;
     return {
-      messages: rows.slice(0, 40).reverse(),
+      messages: page,
       hasMore,
       epoch: room.epoch,
+      partnerReadSeq: Number(partnerRead?.seq || 0),
     };
   }
   addMessage(user: string, input: Record<string, unknown>) {
     return this.tx(() => {
       const room = this.requireRoom(user, input.epoch),
-        body = text(input.text, 4000);
+        body = text(input.text, 4000),
+        replyTo = input.replyTo ? text(input.replyTo, 64) : null;
+      if (
+        replyTo &&
+        !this.db
+          .prepare("SELECT 1 FROM messages WHERE id=? AND room=?")
+          .get(replyTo, room.id)
+      )
+        throw new AppError("Сообщение для ответа больше недоступно.", 404);
+      const id = randomUUID();
       this.db
         .prepare(
-          "INSERT INTO messages(id,room,author,text,created) VALUES(?,?,?,?,?)",
+          "INSERT INTO messages(id,room,author,text,created,reply_to) VALUES(?,?,?,?,?,?)",
         )
-        .run(randomUUID(), room.id, user, body, Date.now());
+        .run(id, room.id, user, body, Date.now(), replyTo);
+      this.db
+        .prepare(
+          `DELETE FROM messages WHERE room=? AND seq IN (
+            SELECT seq FROM messages WHERE room=? ORDER BY seq DESC LIMIT -1 OFFSET 1000
+          )`,
+        )
+        .run(room.id, room.id);
+      return id;
+    });
+  }
+  reactMessage(user: string, input: Record<string, unknown>) {
+    return this.tx(() => {
+      const room = this.requireRoom(user, input.epoch),
+        id = text(input.id, 64),
+        emoji = text(input.emoji || "", 8, false) as MessageReactionEmoji;
+      if (emoji && !(MESSAGE_REACTIONS as readonly string[]).includes(emoji))
+        throw new AppError("Эта реакция пока не поддерживается.");
+      if (
+        !this.db
+          .prepare("SELECT 1 FROM messages WHERE id=? AND room=?")
+          .get(id, room.id)
+      )
+        throw new AppError("Сообщение больше недоступно.", 404);
+      const current = this.db
+        .prepare("SELECT emoji FROM message_reactions WHERE message=? AND user=?")
+        .get(id, user) as { emoji: string } | undefined;
+      if (!emoji || current?.emoji === emoji) {
+        this.db
+          .prepare("DELETE FROM message_reactions WHERE message=? AND user=?")
+          .run(id, user);
+        return;
+      }
+      this.db
+        .prepare(
+          `INSERT INTO message_reactions(message,user,emoji,created)
+           VALUES(?,?,?,?) ON CONFLICT(message,user) DO UPDATE SET
+           emoji=excluded.emoji,created=excluded.created`,
+        )
+        .run(id, user, emoji, Date.now());
+    });
+  }
+  chatUnread(user: string, input: Record<string, unknown>) {
+    const room = this.requireRoom(user, input.epoch);
+    const read = this.db
+      .prepare("SELECT last_read_seq FROM chat_reads WHERE room=? AND user=?")
+      .get(room.id, user) as { last_read_seq: number } | undefined;
+    const row = this.db
+      .prepare(
+        `SELECT
+           COALESCE(SUM(CASE WHEN author<>? AND seq>? THEN 1 ELSE 0 END),0) AS unread,
+           COALESCE(MAX(seq),0) AS latest
+         FROM messages WHERE room=?`,
+      )
+      .get(user, read?.last_read_seq || 0, room.id) as {
+      unread: number;
+      latest: number;
+    };
+    return { unread: row.unread, latestSeq: row.latest, epoch: room.epoch };
+  }
+  markChatRead(user: string, input: Record<string, unknown>) {
+    return this.tx(() => {
+      const room = this.requireRoom(user, input.epoch),
+        requested = Number(input.lastSeq);
+      if (!Number.isSafeInteger(requested) || requested < 0)
+        throw new AppError("Некорректная отметка прочтения.");
+      const latest = this.db
+        .prepare("SELECT COALESCE(MAX(seq),0) AS seq FROM messages WHERE room=?")
+        .get(room.id) as { seq: number };
+      const safe = Math.min(requested, latest.seq);
+      this.db
+        .prepare(
+          `INSERT INTO chat_reads(room,user,last_read_seq,updated) VALUES(?,?,?,?)
+           ON CONFLICT(room,user) DO UPDATE SET
+           last_read_seq=MAX(chat_reads.last_read_seq,excluded.last_read_seq),
+           updated=excluded.updated`,
+        )
+        .run(room.id, user, safe, Date.now());
+      return { ok: true, lastReadSeq: safe, epoch: room.epoch };
     });
   }
   saveEntry(user: string, input: Record<string, unknown>) {
@@ -544,19 +696,12 @@ export class Store {
     const complete = rows.length === 2;
     return {
       id: g.id,
-      kind: g.kind,
+      kind: g.kind as GameKind,
       question: g.question,
       choices: JSON.parse(g.choices),
       complete,
       correctAnswer:
-        complete && g.kind === "quiz"
-          ? (
-              {
-                "Какой океан самый большой?": "Тихий",
-                "Какая планета ближе всего к Солнцу?": "Меркурий",
-              } as Record<string, string>
-            )[g.question] || null
-          : null,
+        complete && g.kind === "quiz" ? correctGameAnswer(g.question) : null,
       responses: rows.map((r) => {
         const visible = complete || r.user === user;
         const choice =
@@ -582,53 +727,23 @@ export class Store {
       if (active && !active.complete)
         throw new AppError("Сначала завершите текущий раунд.", 409);
       const kind = text(input.kind, 20);
-      const questions: Record<string, { q: string; c: string[] }[]> = {
-        know: [
-          {
-            q: "Какой выходной выберете вы? А ваш партнёр?",
-            c: [
-              "Прогулка на природе",
-              "Домашний киномарафон",
-              "Поездка в новый город",
-              "Встреча с друзьями",
-            ],
-          },
-        ],
-        quiz: [
-          {
-            q: "Какой океан самый большой?",
-            c: ["Тихий", "Атлантический", "Индийский", "Северный Ледовитый"],
-          },
-          {
-            q: "Какая планета ближе всего к Солнцу?",
-            c: ["Венера", "Меркурий", "Марс", "Земля"],
-          },
-        ],
-        either: [
-          {
-            q: "Идеальное начало дня?",
-            c: ["Рассвет и прогулка", "Неспешный завтрак"],
-          },
-          { q: "Куда отправимся?", c: ["К морю", "В горы"] },
-          { q: "Что выберем вечером?", c: ["Фильм", "Настольную игру"] },
-        ],
-        date: [
-          {
-            q: "План на двоих: приготовьте вместе новое блюдо и придумайте ему название.",
-            c: ["Договорились", "Давайте в другой день"],
-          },
-          {
-            q: "План на двоих: выберите незнакомую улицу и устройте фотопрогулку.",
-            c: ["Договорились", "Давайте в другой день"],
-          },
-        ],
-      };
-      if (!questions[kind]) throw new AppError("Неизвестная игра.");
-      const items = questions[kind],
-        q = items[Math.floor(Math.random() * items.length)];
+      if (!isGameKind(kind)) throw new AppError("Неизвестная игра.");
+      const previous = this.db
+        .prepare(
+          "SELECT question FROM games WHERE room=? AND kind=? ORDER BY created DESC LIMIT 1",
+        )
+        .get(room.id, kind) as { question: string } | undefined;
+      const question = randomGameQuestion(kind, previous?.question);
       this.db
         .prepare("INSERT INTO games VALUES(?,?,?,?,?,?)")
-        .run(randomUUID(), room.id, kind, q.q, JSON.stringify(q.c), Date.now());
+        .run(
+          randomUUID(),
+          room.id,
+          kind,
+          question.question,
+          JSON.stringify(question.choices),
+          Date.now(),
+        );
     });
   }
   answerGame(user: string, input: Record<string, unknown>) {

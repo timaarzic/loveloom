@@ -1,4 +1,16 @@
-import type { Snapshot, Message, Game, EntryKind } from "./types";
+import {
+  MESSAGE_REACTIONS,
+  type Snapshot,
+  type Message,
+  type Game,
+  type EntryKind,
+  type MessageReactionEmoji,
+} from "./types";
+import {
+  correctGameAnswer,
+  isGameKind,
+  randomGameQuestion,
+} from "./game-content";
 
 // Only used by the explicitly labelled GitHub Pages design preview.
 // This is device-local sample state, never an authentication or server adapter.
@@ -220,6 +232,7 @@ export async function previewApi(
         messages: structuredClone(state.messages),
         hasMore: false,
         epoch: s.room.epoch,
+        partnerReadSeq: 0,
       };
     const text = String(data.text || "")
       .trim()
@@ -231,8 +244,46 @@ export async function previewApi(
       author: s.user.id,
       text,
       created: Date.now(),
+      reply: data.replyTo
+        ? (() => {
+            const replied = state.messages.find((message) => message.id === data.replyTo);
+            return replied
+              ? {
+                  id: replied.id,
+                  author: replied.author,
+                  text: replied.text,
+                  mediaKind: replied.media?.kind || null,
+                }
+              : null;
+          })()
+        : null,
+      reactions: [],
     });
-    state.messages = state.messages.slice(-100);
+    state.messages = state.messages.slice(-1000);
+  } else if (route === "messages/reaction") {
+    if (!s.room || !s.user) throw new Error("Откройте тестовую комнату.");
+    const message = state.messages.find((item) => item.id === data.id);
+    const emoji = String(data.emoji || "") as MessageReactionEmoji;
+    if (!message) throw new Error("Сообщение больше недоступно.");
+    if (!(MESSAGE_REACTIONS as readonly string[]).includes(emoji))
+      throw new Error("Эта реакция пока не поддерживается.");
+    const reactions = (message.reactions || []).map((reaction) => ({
+      ...reaction,
+      users: reaction.users.filter((id) => id !== s.user!.id),
+    }));
+    const selected = reactions.find((reaction) => reaction.emoji === emoji);
+    const alreadySelected = (message.reactions || []).some(
+      (reaction) => reaction.emoji === emoji && reaction.users.includes(s.user!.id),
+    );
+    if (!alreadySelected) {
+      if (selected) selected.users.push(s.user.id);
+      else reactions.push({ emoji, users: [s.user.id] });
+    }
+    message.reactions = reactions.filter((reaction) => reaction.users.length);
+  } else if (route === "messages/unread") {
+    return { unread: 0, latestSeq: state.messages.at(-1)?.seq || 0, epoch: s.room?.epoch || 0 };
+  } else if (route === "messages/read") {
+    return { ok: true, lastReadSeq: Number(data.lastSeq || 0), epoch: s.room?.epoch || 0 };
   } else if (route === "games") {
     if (input === undefined) {
       const game = structuredClone(state.game);
@@ -247,41 +298,14 @@ export async function previewApi(
         throw new Error(
           "Ответьте за обоих участников, переключив роль сверху.",
         );
-      const questions: Record<string, { question: string; choices: string[] }> =
-        {
-          know: {
-            question: "Какой выходной выберете вы? А ваш партнёр?",
-            choices: [
-              "Прогулка на природе",
-              "Домашний киномарафон",
-              "Поездка в новый город",
-              "Встреча с друзьями",
-            ],
-          },
-          quiz: {
-            question: "Какой океан самый большой?",
-            choices: [
-              "Тихий",
-              "Атлантический",
-              "Индийский",
-              "Северный Ледовитый",
-            ],
-          },
-          either: {
-            question: "Куда отправимся?",
-            choices: ["К морю", "В горы"],
-          },
-          date: {
-            question:
-              "План на двоих: приготовьте вместе новое блюдо и придумайте ему название.",
-            choices: ["Договорились", "Давайте в другой день"],
-          },
-        };
-      if (!questions[data.kind]) throw new Error("Выберите игру.");
+      const kind = String(data.kind);
+      if (!isGameKind(kind)) throw new Error("Выберите игру.");
+      const question = randomGameQuestion(kind, state.game?.question);
       state.game = {
         id: crypto.randomUUID(),
-        kind: data.kind,
-        ...questions[data.kind],
+        kind,
+        question: question.question,
+        choices: [...question.choices],
         responses: [],
         complete: false,
         correctAnswer: null,
@@ -302,7 +326,8 @@ export async function previewApi(
         guess: g.kind === "know" ? data.guess : null,
       });
       g.complete = g.responses.length === 2;
-      if (g.complete && g.kind === "quiz") g.correctAnswer = "Тихий";
+      if (g.complete && g.kind === "quiz")
+        g.correctAnswer = correctGameAnswer(g.question);
     }
   } else if (route === "location")
     throw new Error(

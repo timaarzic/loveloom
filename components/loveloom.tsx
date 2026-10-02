@@ -4,10 +4,12 @@ import {
   useEffect,
   useRef,
   useCallback,
+  useMemo,
   type FormEvent,
   type ReactNode,
 } from "react";
 import Image from "next/image";
+import dynamic from "next/dynamic";
 import {
   Heart,
   Home,
@@ -56,11 +58,28 @@ import {
   Palette,
   Square,
   BellRing,
+  Reply,
+  SmilePlus,
+  CheckCheck,
 } from "lucide-react";
-import type { Snapshot, Entry, EntryKind, Message, Game } from "@/lib/types";
+import {
+  MESSAGE_REACTIONS,
+  type Snapshot,
+  type Entry,
+  type EntryKind,
+  type Message,
+  type Game,
+  type MessagePage,
+  type MessageReactionEmoji,
+} from "@/lib/types";
 import { asset } from "@/lib/assets";
 import { previewApi, previewScreen } from "@/lib/preview";
-import { cloudApi, onCloudAuthChange } from "@/lib/cloud";
+import {
+  cloudApi,
+  onCloudAuthChange,
+  openCloudRoomSync,
+  type RoomSyncConnection,
+} from "@/lib/cloud";
 import {
   startPcmVoiceRecorder,
   VOICE_MAX_MS,
@@ -68,6 +87,18 @@ import {
 } from "@/lib/voice";
 import { registerLoveLoomWorker, type PushState } from "@/lib/push";
 import MomentsHub, { MediaBubble } from "@/components/moments";
+
+const GamesExperience = dynamic(
+  () => import("@/components/games-experience"),
+  {
+    loading: () => (
+      <div className="games-loading" aria-live="polite">
+        <LoaderCircle className="spin" size={22} />
+        Раскладываем игровые карточки…
+      </div>
+    ),
+  },
+);
 type Tab = "home" | "chat" | "together" | "games" | "settings";
 type LocationPermission =
   | "checking"
@@ -306,7 +337,11 @@ export default function LoveLoom({
     [entry, setEntry] = useState<Entry | null>(null);
   const [messages, setMessages] = useState<Message[]>([]),
     [hasMore, setHasMore] = useState(false),
+    [partnerReadSeq, setPartnerReadSeq] = useState(0),
     [messageText, setMessageText] = useState(""),
+    [replyingTo, setReplyingTo] = useState<Message | null>(null),
+    [reactionFor, setReactionFor] = useState<string | null>(null),
+    [highlightedMessage, setHighlightedMessage] = useState<string | null>(null),
     [game, setGame] = useState<Game | null>(null);
   const [setupToken, setSetupToken] = useState(""),
     [admin, setAdmin] = useState<{
@@ -326,8 +361,13 @@ export default function LoveLoom({
     stick = useRef(true),
     toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null),
     chatMediaInput = useRef<HTMLInputElement>(null),
+    messageInput = useRef<HTMLTextAreaElement>(null),
     voiceRecorder = useRef<PcmVoiceRecorder | null>(null),
     voiceLimitTimer = useRef<ReturnType<typeof setTimeout> | null>(null),
+    roomSync = useRef<RoomSyncConnection | null>(null),
+    messageFetch = useRef<Promise<void> | null>(null),
+    lastMarkedRead = useRef(0),
+    renderedMessageCount = useRef(0),
     activeTab = useRef(tab);
   snapshot.current = s;
   activeTab.current = tab;
@@ -393,6 +433,11 @@ export default function LoveLoom({
       ) {
         setMessages([]);
         setUnreadMessages(0);
+        setPartnerReadSeq(0);
+        setReplyingTo(null);
+        setReactionFor(null);
+        lastMarkedRead.current = 0;
+        renderedMessageCount.current = 0;
         setGame(null);
         setModal(null);
         tell("Состояние комнаты изменилось. Общая история обновлена.");
@@ -412,7 +457,7 @@ export default function LoveLoom({
     void refresh();
     const interval = setInterval(() => {
       if (document.visibilityState === "visible") void refresh();
-    }, 3500);
+    }, 8000);
     const online = () => void refresh();
     window.addEventListener("online", online);
     const off = () => setOffline(true);
@@ -518,36 +563,59 @@ export default function LoveLoom({
       document.removeEventListener("visibilitychange", beat);
     };
   }, [s.user?.id, api]);
-  const fetchMessages = useCallback(async () => {
-    try {
-      const room = snapshot.current.room;
-      if (!room) return;
-      const result = await api("messages");
-      if (
-        snapshot.current.room?.id !== room.id ||
-        snapshot.current.room.epoch !== result.epoch
-      )
-        return;
-      setMessages((old) => {
-        const byId = new Map(
-          [...old, ...result.messages].map((m: Message) => [m.seq, m]),
-        );
-        return [...byId.values()].sort((a, b) => a.seq - b.seq);
-      });
-      setHasMore((prev) => prev || result.hasMore);
-      if (cloud && activeTab.current === "chat") {
-        const lastSeq = Number(result.messages.at(-1)?.seq || 0);
-        await api("messages/read", {
-          epoch: room.epoch,
-          lastSeq,
+  const fetchMessages = useCallback(async (force = false) => {
+    if (messageFetch.current) {
+      await messageFetch.current;
+      if (!force) return;
+    }
+    const task = (async () => {
+      try {
+        const room = snapshot.current.room;
+        if (!room) return;
+        const result = (await api("messages")) as MessagePage;
+        if (
+          snapshot.current.room?.id !== room.id ||
+          snapshot.current.room.epoch !== result.epoch
+        )
+          return;
+        setMessages((old) => {
+          const byId = new Map(
+            [...old, ...result.messages].map((message) => [message.seq, message]),
+          );
+          return [...byId.values()].sort((a, b) => a.seq - b.seq);
         });
-        if (snapshot.current.room?.id === room.id) setUnreadMessages(0);
-      }
-    } catch {}
-  }, [api, cloud]);
+        setPartnerReadSeq(Math.max(0, Number(result.partnerReadSeq || 0)));
+        setHasMore((previous) => previous || result.hasMore);
+        if (
+          activeTab.current === "chat" &&
+          document.visibilityState === "visible"
+        ) {
+          const lastSeq = Number(result.messages.at(-1)?.seq || 0);
+          if (lastSeq > lastMarkedRead.current) {
+            const marked = await api("messages/read", {
+              epoch: room.epoch,
+              lastSeq,
+            });
+            lastMarkedRead.current = Math.max(
+              lastMarkedRead.current,
+              Number(marked.lastReadSeq || lastSeq),
+            );
+            void roomSync.current?.notify("read");
+          }
+          if (snapshot.current.room?.id === room.id) setUnreadMessages(0);
+        }
+      } catch {}
+    })();
+    messageFetch.current = task;
+    try {
+      await task;
+    } finally {
+      if (messageFetch.current === task) messageFetch.current = null;
+    }
+  }, [api]);
   const fetchUnread = useCallback(async () => {
     const room = snapshot.current.room;
-    if (!cloud || !room || activeTab.current === "chat") return;
+    if (!room || activeTab.current === "chat") return;
     try {
       const result = await api("messages/unread", { epoch: room.epoch });
       if (
@@ -557,26 +625,45 @@ export default function LoveLoom({
       )
         setUnreadMessages(Math.max(0, Number(result.unread || 0)));
     } catch {}
-  }, [api, cloud]);
+  }, [api]);
+  const fetchGame = useCallback(async () => {
+    const room = snapshot.current.room;
+    if (!room) return;
+    try {
+      const result = await api("games");
+      if (
+        snapshot.current.room?.id === room.id &&
+        snapshot.current.room.epoch === room.epoch
+      )
+        setGame(result.game);
+    } catch {}
+  }, [api]);
   useEffect(() => {
     if (!s.room) return;
     if (tab === "chat") {
-      void fetchMessages();
-      const timer = setInterval(fetchMessages, 2000);
-      return () => clearInterval(timer);
+      const run = () => {
+        if (document.visibilityState === "visible") void fetchMessages();
+      };
+      run();
+      const timer = setInterval(() => {
+        run();
+      }, 12000);
+      document.addEventListener("visibilitychange", run);
+      return () => {
+        clearInterval(timer);
+        document.removeEventListener("visibilitychange", run);
+      };
     }
     if (tab === "games") {
-      const run = () =>
-        void api("games")
-          .then((result) => setGame(result.game))
-          .catch(() => {});
-      run();
-      const timer = setInterval(run, 2500);
+      void fetchGame();
+      const timer = setInterval(() => {
+        if (document.visibilityState === "visible") void fetchGame();
+      }, 12000);
       return () => clearInterval(timer);
     }
-  }, [s.room?.id, s.room?.epoch, tab, api, fetchMessages]);
+  }, [s.room?.id, s.room?.epoch, tab, fetchMessages, fetchGame]);
   useEffect(() => {
-    if (!cloud || !s.room) {
+    if (!s.room) {
       setUnreadMessages(0);
       return;
     }
@@ -585,13 +672,33 @@ export default function LoveLoom({
       if (document.visibilityState === "visible") void fetchUnread();
     };
     run();
-    const timer = setInterval(run, 2500);
+    const timer = setInterval(run, 12000);
     document.addEventListener("visibilitychange", run);
     return () => {
       clearInterval(timer);
       document.removeEventListener("visibilitychange", run);
     };
-  }, [cloud, s.room?.id, s.room?.epoch, tab, fetchUnread]);
+  }, [s.room?.id, s.room?.epoch, tab, fetchUnread]);
+  useEffect(() => {
+    if (!cloud || !s.room || !s.user) {
+      roomSync.current?.close();
+      roomSync.current = null;
+      return;
+    }
+    const connection = openCloudRoomSync(s.room.id, s.user.id, (kind) => {
+      if (kind === "game") {
+        void fetchGame();
+        return;
+      }
+      if (activeTab.current === "chat") void fetchMessages();
+      else if (kind === "chat" || kind === "reaction") void fetchUnread();
+    });
+    roomSync.current = connection;
+    return () => {
+      if (roomSync.current === connection) roomSync.current = null;
+      connection.close();
+    };
+  }, [cloud, s.room?.id, s.user?.id, fetchGame, fetchMessages, fetchUnread]);
   useEffect(() => {
     if (modal !== "location") return;
     let active = true;
@@ -625,8 +732,13 @@ export default function LoveLoom({
     };
   }, [modal]);
   useEffect(() => {
-    if (tab === "chat" && stick.current)
-      chatBottom.current?.scrollIntoView({ behavior: "instant" });
+    if (tab === "chat" && stick.current) {
+      const firstPaint = renderedMessageCount.current === 0;
+      chatBottom.current?.scrollIntoView({
+        behavior: firstPaint ? "auto" : "smooth",
+      });
+    }
+    renderedMessageCount.current = messages.length;
   }, [messages, tab]);
   function toggleTheme() {
     const next = !dark;
@@ -657,6 +769,21 @@ export default function LoveLoom({
     online = partner ? Date.now() - partner.seen < 25000 : false;
   const date = room ? today(room.timezone) : "",
     days = room?.start ? daysSince(room.start, room.timezone) : null;
+  const chatFormatters = useMemo(() => {
+    const timeZone = room?.timezone || "Europe/Moscow";
+    return {
+      day: new Intl.DateTimeFormat("ru", {
+        timeZone,
+        day: "numeric",
+        month: "long",
+      }),
+      time: new Intl.DateTimeFormat("ru", {
+        timeZone,
+        hour: "2-digit",
+        minute: "2-digit",
+      }),
+    };
+  }, [room?.timezone]);
   const events = s.entries
     .filter((e) => e.kind === "event")
     .sort((a, b) => a.date.localeCompare(b.date));
@@ -702,6 +829,9 @@ export default function LoveLoom({
     if (t === "chat") {
       stick.current = true;
       setUnreadMessages(0);
+    } else {
+      setReactionFor(null);
+      setReplyingTo(null);
     }
     window.scrollTo({ top: 0, behavior: "instant" });
   }
@@ -734,6 +864,9 @@ export default function LoveLoom({
   ) {
     previewScreen(screen);
     setMessages([]);
+    setPartnerReadSeq(0);
+    setReplyingTo(null);
+    setReactionFor(null);
     setGame(null);
     setModal(null);
     if (screen !== "switch") setTab("home");
@@ -770,11 +903,52 @@ export default function LoveLoom({
         roomId: room.id,
         authorId: user.id,
         epoch: room.epoch,
+        replyTo: replyingTo?.id || null,
       });
+      setReplyingTo(null);
       stick.current = true;
-      await fetchMessages();
+      await fetchMessages(true);
+      void roomSync.current?.notify("chat");
       tell(file.type.startsWith("audio/") ? "Голосовое сообщение отправлено." : "Файл отправлен.");
     });
+  }
+
+  async function reactToMessage(id: string, emoji: MessageReactionEmoji) {
+    if (!room) return;
+    await act(async () => {
+      await api("messages/reaction", { id, emoji, epoch: room.epoch });
+      setReactionFor(null);
+      await fetchMessages(true);
+      void roomSync.current?.notify("reaction");
+    });
+  }
+
+  function beginReply(message: Message) {
+    setReplyingTo(message);
+    setReactionFor(null);
+    requestAnimationFrame(() => messageInput.current?.focus());
+  }
+
+  function showRepliedMessage(id: string) {
+    const element = document.getElementById(`message-${id}`);
+    if (!element) {
+      tell("Это сообщение осталось выше. Загрузите ранние сообщения, чтобы увидеть его.");
+      return;
+    }
+    element.scrollIntoView({ behavior: "smooth", block: "center" });
+    setHighlightedMessage(id);
+    window.setTimeout(
+      () => setHighlightedMessage((current) => (current === id ? null : current)),
+      1800,
+    );
+  }
+
+  function replyPreview(message: Message) {
+    if (message.text) return message.text;
+    if (message.media?.kind === "image") return "Фотография";
+    if (message.media?.kind === "video") return "Видео";
+    if (message.media?.kind === "audio") return "Голосовое сообщение";
+    return "Сообщение";
   }
 
   async function finishVoiceRecording() {
@@ -920,7 +1094,7 @@ export default function LoveLoom({
     <>
       {preview && (
         <div className="beta-bar" aria-label="Панель дизайн-беты">
-          <strong>LoveLoom · sketch beta 0.5</strong>
+          <strong>LoveLoom · sketch beta 0.6</strong>
           <span className="beta-description">
             Вымышленные данные · изменения только в этом браузере
           </span>
@@ -1761,55 +1935,167 @@ export default function LoveLoom({
                         detail="Первое сообщение — маленькое начало большой истории."
                       />
                     ) : (
-                      messages.map((m, i) => (
-                        <div
-                          key={m.id}
-                          className={`message-row ${m.author === user.id ? "mine" : ""}`}
-                        >
-                          {(i === 0 ||
-                            new Date(m.created).toDateString() !==
-                              new Date(
-                                messages[i - 1].created,
-                              ).toDateString()) && (
-                            <span className="message-day">
-                              {new Intl.DateTimeFormat("ru", {
-                                timeZone: room.timezone,
-                                day: "numeric",
-                                month: "long",
-                              }).format(m.created)}
-                            </span>
-                          )}
-                          <div className="message">
-                            {m.media && <MediaBubble media={m.media} />}
-                            {m.text && !m.media && <p>{m.text}</p>}
-                            <time>
-                              {new Intl.DateTimeFormat("ru", {
-                                timeZone: room.timezone,
-                                hour: "2-digit",
-                                minute: "2-digit",
-                              }).format(m.created)}
-                            </time>
+                      messages.map((message, index) => {
+                        const mine = message.author === user.id;
+                        const readByPartner = mine && message.seq <= partnerReadSeq;
+                        return (
+                          <div
+                            key={message.id}
+                            id={`message-${message.id}`}
+                            className={`message-row ${mine ? "mine" : ""} ${highlightedMessage === message.id ? "is-highlighted" : ""}`}
+                          >
+                            {(index === 0 ||
+                              new Date(message.created).toDateString() !==
+                                new Date(messages[index - 1].created).toDateString()) && (
+                              <span className="message-day">
+                                {chatFormatters.day.format(message.created)}
+                              </span>
+                            )}
+                            <div className="message-cluster">
+                              <div className="message-actions" aria-label="Действия с сообщением">
+                                <button
+                                  type="button"
+                                  onClick={() => beginReply(message)}
+                                  aria-label="Ответить на сообщение"
+                                  title="Ответить"
+                                >
+                                  <Reply size={15} />
+                                </button>
+                                <button
+                                  type="button"
+                                  className={reactionFor === message.id ? "is-active" : ""}
+                                  onClick={() =>
+                                    setReactionFor((current) =>
+                                      current === message.id ? null : message.id,
+                                    )
+                                  }
+                                  aria-label="Добавить реакцию"
+                                  title="Реакция"
+                                >
+                                  <SmilePlus size={15} />
+                                </button>
+                              </div>
+                              <div className="message">
+                                {message.reply && (
+                                  <button
+                                    type="button"
+                                    className="message-reply-preview"
+                                    onClick={() => showRepliedMessage(message.reply!.id)}
+                                  >
+                                    <span>
+                                      {message.reply.author === user.id ? "Вы" : partnerName}
+                                    </span>
+                                    <p>
+                                      {message.reply.text ||
+                                        (message.reply.mediaKind === "image"
+                                          ? "Фотография"
+                                          : message.reply.mediaKind === "video"
+                                            ? "Видео"
+                                            : message.reply.mediaKind === "audio"
+                                              ? "Голосовое сообщение"
+                                              : "Сообщение")}
+                                    </p>
+                                  </button>
+                                )}
+                                {message.media && <MediaBubble media={message.media} />}
+                                {message.text && !message.media && <p>{message.text}</p>}
+                                <div className="message-meta">
+                                  <time>
+                                    {chatFormatters.time.format(message.created)}
+                                  </time>
+                                  {mine && (
+                                    <span
+                                      className={`thread-status ${readByPartner ? "is-read" : ""}`}
+                                      title={
+                                        readByPartner
+                                          ? `Ниточка прочитана: ${partnerName} открыл чат`
+                                          : "Ниточка отправлена"
+                                      }
+                                    >
+                                      {readByPartner ? (
+                                        <CheckCheck size={13} />
+                                      ) : (
+                                        <Check size={12} />
+                                      )}
+                                      {readByPartner ? "прочитано" : "доставлено"}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                              {(message.reactions?.length || 0) > 0 && (
+                                <div className="message-reactions">
+                                  {message.reactions!.map((reaction) => (
+                                    <button
+                                      type="button"
+                                      key={reaction.emoji}
+                                      className={reaction.users.includes(user.id) ? "is-mine" : ""}
+                                      disabled={busy}
+                                      onClick={() =>
+                                        void reactToMessage(message.id, reaction.emoji)
+                                      }
+                                      aria-label={`${reaction.emoji}, реакций: ${reaction.users.length}`}
+                                    >
+                                      {reaction.emoji}
+                                      <span>{reaction.users.length}</span>
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+                              {reactionFor === message.id && (
+                                <div className="reaction-picker" role="toolbar" aria-label="Выберите реакцию">
+                                  {MESSAGE_REACTIONS.map((emoji) => (
+                                    <button
+                                      type="button"
+                                      key={emoji}
+                                      disabled={busy}
+                                      onClick={() => void reactToMessage(message.id, emoji)}
+                                      aria-label={`Поставить реакцию ${emoji}`}
+                                    >
+                                      {emoji}
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
                           </div>
-                        </div>
-                      ))
+                        );
+                      })
                     )}
                     <div ref={chatBottom} />
                   </div>
-                  <form
-                    className="message-compose"
-                    onSubmit={(e) => {
-                      e.preventDefault();
-                      void act(async () => {
-                        await api("messages", {
-                          text: messageText,
-                          epoch: room.epoch,
+                  <div className={`composer-shell ${replyingTo ? "has-reply" : ""}`}>
+                    {replyingTo && (
+                      <div className="composer-reply">
+                        <Reply size={16} />
+                        <span>
+                          <strong>
+                            Ответ для {replyingTo.author === user.id ? "себя" : partnerName}
+                          </strong>
+                          {replyPreview(replyingTo)}
+                        </span>
+                        <button type="button" onClick={() => setReplyingTo(null)} aria-label="Отменить ответ">
+                          <X size={17} />
+                        </button>
+                      </div>
+                    )}
+                    <form
+                      className="message-compose"
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        void act(async () => {
+                          await api("messages", {
+                            text: messageText,
+                            replyTo: replyingTo?.id || null,
+                            epoch: room.epoch,
+                          });
+                          setMessageText("");
+                          setReplyingTo(null);
+                          stick.current = true;
+                          await fetchMessages(true);
+                          void roomSync.current?.notify("chat");
                         });
-                        setMessageText("");
-                        stick.current = true;
-                        await fetchMessages();
-                      });
-                    }}
-                  >
+                      }}
+                    >
                     <input
                       ref={chatMediaInput}
                       hidden
@@ -1850,6 +2136,7 @@ export default function LoveLoom({
                       </button>
                     </div>
                     <textarea
+                      ref={messageInput}
                       value={messageText}
                       onChange={(e) => setMessageText(e.target.value)}
                       aria-label="Сообщение"
@@ -1870,7 +2157,8 @@ export default function LoveLoom({
                     >
                       <Send size={20} />
                     </button>
-                  </form>
+                    </form>
+                  </div>
                   <p className="chat-footnote">
                     <LockKeyhole size={12} />
                     Текст, фото, видео и голосовые · звонки пока не подключены
@@ -2034,209 +2322,17 @@ export default function LoveLoom({
                     cloud={cloud}
                     tell={tell}
                   />
-                  <div className="page-heading games-heading">
-                    <div>
-                      <div className="eyebrow">ВРЕМЯ ДЛЯ ВАС</div>
-                      <h1>
-                        Немного игры.
-                        <br />
-                        <em>Ещё больше общего.</em>
-                      </h1>
-                      <p>Никакой спешки. Только вы и новый повод улыбнуться.</p>
-                    </div>
-                    <Gamepad2
-                      className="page-illustration"
-                      size={75}
-                      strokeWidth={1}
-                    />
-                  </div>
-                  <div className="games-grid">
-                    {[
-                      {
-                        id: "know",
-                        title: "Знаю тебя",
-                        subtitle: "Предугадайте выбор друг друга",
-                        n: "01",
-                        icon: Heart,
-                      },
-                      {
-                        id: "quiz",
-                        title: "Сравним ответы",
-                        subtitle: "Небольшая викторина на двоих",
-                        n: "02",
-                        icon: Sparkles,
-                      },
-                      {
-                        id: "either",
-                        title: "Одно из двух",
-                        subtitle: "Море или горы? Давайте узнаем",
-                        n: "03",
-                        icon: Gamepad2,
-                      },
-                      {
-                        id: "date",
-                        title: "Что сделаем вместе?",
-                        subtitle: "Идея для вашего следующего дня",
-                        n: "04",
-                        icon: Sun,
-                      },
-                    ].map((g) => (
-                      <button
-                        key={g.id}
-                        className={`game-card game-${g.id}`}
-                        disabled={busy}
-                        onClick={() =>
-                          void act(async () => {
-                            await api("games", {
-                              kind: g.id,
-                              epoch: room.epoch,
-                            });
-                            setGame((await api("games")).game);
-                          })
-                        }
-                      >
-                        <div className="card-label">
-                          <g.icon size={28} strokeWidth={1.5} />
-                          <span>{g.n}</span>
-                        </div>
-                        <h2>{g.title}</h2>
-                        <p>{g.subtitle}</p>
-                        <span className="game-start">
-                          {partner ? "Начать раунд" : "Нужны два участника"}
-                          <ArrowUpRight size={21} />
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                  {game && (
-                    <section className="card round-card">
-                      <div className="eyebrow">
-                        {game.complete ? "ВАШИ ОТВЕТЫ" : "ТЕКУЩИЙ РАУНД"}
-                      </div>
-                      <h2>{game.question}</h2>
-                      {!game.responses.some((r) => r.user === user.id) ? (
-                        game.kind === "know" ? (
-                          <form
-                            className="form-stack"
-                            key={game.id}
-                            onSubmit={(e) => {
-                              e.preventDefault();
-                              const form = new FormData(e.currentTarget);
-                              void act(async () => {
-                                await api("games", {
-                                  action: "answer",
-                                  id: game.id,
-                                  answer: form.get("answer"),
-                                  guess: form.get("guess"),
-                                  epoch: room.epoch,
-                                });
-                                setGame((await api("games")).game);
-                              });
-                            }}
-                          >
-                            <label>
-                              Ваш собственный выбор
-                              <select name="answer" required defaultValue="">
-                                <option value="" disabled>
-                                  Выберите ответ
-                                </option>
-                                {game.choices.map((c) => (
-                                  <option key={c}>{c}</option>
-                                ))}
-                              </select>
-                            </label>
-                            <label>
-                              Как, по-вашему, ответит партнёр?
-                              <select name="guess" required defaultValue="">
-                                <option value="" disabled>
-                                  Попробуйте угадать
-                                </option>
-                                {game.choices.map((c) => (
-                                  <option key={c}>{c}</option>
-                                ))}
-                              </select>
-                            </label>
-                            <button className="button" disabled={busy}>
-                              Отправить ответы
-                              <Check size={17} />
-                            </button>
-                          </form>
-                        ) : (
-                          <div className="answer-grid">
-                            {game.choices.map((answer) => (
-                              <button
-                                className="button secondary"
-                                key={answer}
-                                disabled={busy}
-                                onClick={() =>
-                                  void act(async () => {
-                                    await api("games", {
-                                      action: "answer",
-                                      id: game.id,
-                                      answer,
-                                      epoch: room.epoch,
-                                    });
-                                    setGame((await api("games")).game);
-                                  })
-                                }
-                              >
-                                {answer}
-                              </button>
-                            ))}
-                          </div>
-                        )
-                      ) : !game.complete ? (
-                        <p className="round-wait">
-                          <Clock size={19} />
-                          Ваш ответ принят. Ответ партнёра скрыт, пока не
-                          ответят оба.
-                        </p>
-                      ) : (
-                        <div className="answer-grid">
-                          {game.responses.map((r) => (
-                            <div className="answer-result" key={r.user}>
-                              <Avatar
-                                name={
-                                  r.user === user.id ? user.name : partnerName
-                                }
-                              />
-                              <span>
-                                <strong>
-                                  {r.user === user.id
-                                    ? "Ваш ответ"
-                                    : partnerName}
-                                </strong>
-                                {r.answer}
-                                {r.guess && (
-                                  <small className="game-score">
-                                    Прогноз: {r.guess}
-                                    <br />
-                                    {r.guess ===
-                                    game.responses.find(
-                                      (other) => other.user !== r.user,
-                                    )?.answer
-                                      ? "Выбор партнёра угадан!"
-                                      : "В этот раз партнёр выбрал иначе."}
-                                  </small>
-                                )}
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                      {game.correctAnswer && (
-                        <p className="quiz-result">
-                          <CheckCircle2 size={18} />
-                          Правильный ответ: {game.correctAnswer}
-                        </p>
-                      )}
-                    </section>
-                  )}
-                  <div className="privacy-note">
-                    <LockKeyhole size={16} />
-                    Ответы друг друга открываются только после выбора обоих
-                    участников.
-                  </div>
+                  <GamesExperience
+                    api={api}
+                    room={room}
+                    user={user}
+                    partnerName={partnerName}
+                    hasPartner={Boolean(partner)}
+                    game={game}
+                    setGame={setGame}
+                    tell={tell}
+                    onGameChange={() => void roomSync.current?.notify("game")}
+                  />
                 </>
               )}
               {tab === "settings" && (
@@ -2804,7 +2900,7 @@ export default function LoveLoom({
           {(modal === "progress" || modal === "about") && (
             <div className="form-stack">
               <p className="handwritten-note">
-                Блокнот для двоих. Версия 0.5 beta.
+                Блокнот для двоих. Версия 0.6 beta.
               </p>
               <p>
                 {preview
@@ -2818,7 +2914,9 @@ export default function LoveLoom({
                   <strong>{cloud ? "Работает в облаке" : "Можно попробовать"}</strong>
                   Регистрация, постоянный вход, комнаты для двоих, чат,
                   календарь, заметки, желания, фильмы, музыка, расстояние и
-                  четыре мини-игры. Добавлены фото, видео, совместимые голосовые,
+                  четыре мини-игры по 20 вопросов, колесо решений, ответы и
+                  реакции в чате, тематический статус прочтения. Добавлены фото,
+                  видео, совместимые голосовые,
                   общий альбом, капсулы времени, сад, тактильный сигнал с
                   сердцами и поцелуями, восстановление доступа и Push для сообщений.
                 </li>

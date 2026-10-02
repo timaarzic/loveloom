@@ -20,6 +20,7 @@ for (const file of ["layout.tsx", "globals.css", "sketch.css"])
 for (const file of [
   "types.ts",
   "preview.ts",
+  "game-content.ts",
   "assets.ts",
   "cloud.ts",
   "garden.ts",

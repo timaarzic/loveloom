@@ -211,11 +211,79 @@ try {
   await a
     .getByText("Давай! Можно выбрать новое место.", { exact: true })
     .waitFor();
+
+  const firstMessageOnB = b
+    .locator(".message-row")
+    .filter({
+      has: b.locator(".message > p", {
+        hasText: /^Как насчёт прогулки на выходных\?$/,
+      }),
+    })
+    .first();
+  await firstMessageOnB
+    .getByRole("button", { name: "Ответить на сообщение" })
+    .click();
+  await b
+    .getByLabel("Сообщение", { exact: true })
+    .fill("Отвечаю именно на это сообщение.");
+  await b.getByRole("button", { name: "Отправить сообщение" }).click();
+  await b
+    .locator(".message-row")
+    .filter({ hasText: "Отвечаю именно на это сообщение." })
+    .locator(".message-reply-preview")
+    .waitFor();
+
+  await firstMessageOnB
+    .getByRole("button", { name: "Добавить реакцию" })
+    .click();
+  await firstMessageOnB
+    .getByRole("button", { name: "Поставить реакцию 💗" })
+    .click();
+  await firstMessageOnB
+    .getByRole("button", { name: "💗, реакций: 1" })
+    .waitFor();
+
+  await a.getByRole("button", { name: "Главная", exact: true }).first().click();
+  await a.getByRole("button", { name: /Чат/ }).first().click();
+  await a
+    .getByText("Отвечаю именно на это сообщение.", { exact: true })
+    .waitFor();
+  const firstMessageOnA = a
+    .locator(".message-row")
+    .filter({
+      has: a.locator(".message > p", {
+        hasText: /^Как насчёт прогулки на выходных\?$/,
+      }),
+    })
+    .first();
+  await firstMessageOnA
+    .getByRole("button", { name: "💗, реакций: 1" })
+    .waitFor();
+  await firstMessageOnA.locator(".thread-status.is-read").waitFor();
+
+  await b.getByRole("button", { name: "Главная", exact: true }).last().click();
+  await a
+    .getByLabel("Сообщение", { exact: true })
+    .fill("Сообщение для счётчика непрочитанного.");
+  await a.getByRole("button", { name: "Отправить сообщение" }).click();
+  await b
+    .getByRole("button", { name: /Чат, непрочитанных сообщений: 1/ })
+    .last()
+    .waitFor({ timeout: 16000 });
+  await b
+    .getByRole("button", { name: /Чат, непрочитанных сообщений: 1/ })
+    .last()
+    .click();
+  await b
+    .getByText("Сообщение для счётчика непрочитанного.", { exact: true })
+    .waitFor();
   await b.screenshot({
     path: join(output, "04-chat-mobile.png"),
     fullPage: true,
   });
-  console.log("PASS: two-way text chat synchronization.");
+  console.log(
+    "PASS: chat replies, reactions, read status and durable unread badge work for two users.",
+  );
   await a.getByRole("button", { name: "Главная", exact: true }).first().click();
   await a.getByText("Тот самый закат", { exact: true }).waitFor();
   await a.evaluate(() => document.fonts.ready);
@@ -309,6 +377,71 @@ try {
   });
   console.log(
     "PASS: tactile logo, album, four-stage garden and three-capsule notice render on desktop and mobile.",
+  );
+
+  await a
+    .getByRole("button", { name: /Знаю тебя/ })
+    .click();
+  await a.getByRole("dialog", { name: "Знаю тебя" }).waitFor();
+  const ownerKnowFlow = a.locator(".know-answer-flow");
+  await ownerKnowFlow.locator("fieldset").nth(0).getByRole("button").first().click();
+  await ownerKnowFlow.locator("fieldset").nth(1).getByRole("button").nth(1).click();
+  await a
+    .getByRole("button", { name: "Сохранить два ответа" })
+    .click();
+  await a.getByText("Ваша ниточка уже здесь", { exact: true }).waitFor();
+
+  await b.getByRole("button", { name: "Профиль", exact: true }).click();
+  await b.getByRole("button", { name: "Для двоих", exact: true }).last().click();
+  await b.locator(".game-card.game-know").click();
+  await b.getByRole("dialog", { name: "Знаю тебя" }).waitFor();
+  const partnerKnowFlow = b.locator(".know-answer-flow");
+  await partnerKnowFlow.locator("fieldset").nth(0).getByRole("button").nth(1).click();
+  await partnerKnowFlow.locator("fieldset").nth(1).getByRole("button").first().click();
+  await b
+    .getByRole("button", { name: "Сохранить два ответа" })
+    .click();
+  await b.locator(".round-results").waitFor();
+  await b.screenshot({
+    path: join(output, "08-game-results-mobile.png"),
+    fullPage: false,
+    timeout: 30000,
+  });
+  await b.getByRole("button", { name: "Закрыть игру" }).click();
+  await a.locator(".round-results").waitFor({ timeout: 16000 });
+  await a.screenshot({
+    path: join(output, "09-game-results-desktop.png"),
+    fullPage: false,
+    timeout: 30000,
+  });
+  await a.getByRole("button", { name: "Закрыть игру" }).click();
+
+  await a
+    .getByRole("button", { name: /Колесо решений/ })
+    .click();
+  await a.getByRole("dialog", { name: "Колесо решений" }).waitFor();
+  for (const option of ["Музей", "Пикник", "Поездка", "Концерт"]) {
+    await a.getByRole("button", { name: "Добавить вариант" }).click();
+    await a.locator(".wheel-option-list input").last().fill(option);
+  }
+  assert.equal(await a.locator(".wheel-option-list input").count(), 8);
+  assert.equal(
+    await a.getByRole("button", { name: "Добавить вариант" }).isDisabled(),
+    true,
+  );
+  await a.getByRole("button", { name: "Крутить колесо" }).click();
+  await a.locator(".wheel-result-screen").waitFor({ timeout: 6000 });
+  assert.equal(await a.locator(".confetti-field i").count(), 36);
+  await a.screenshot({
+    path: join(output, "10-wheel-winner-desktop.png"),
+    fullPage: false,
+    timeout: 30000,
+  });
+  await a
+    .getByRole("button", { name: "Отличный выбор" })
+    .click();
+  console.log(
+    "PASS: full-screen game flow synchronizes both answers; wheel accepts eight options and reveals an animated winner.",
   );
   await a.getByRole("button", { name: "Настройки", exact: true }).first().click();
   await a.getByRole("button", { name: "Выбрать", exact: true }).click();

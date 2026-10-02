@@ -5,6 +5,7 @@ import type {
   MediaItem,
   MediaKind,
   Message,
+  MessagePage,
   Snapshot,
   TimeCapsule,
 } from "./types";
@@ -305,13 +306,14 @@ export async function cloudApi(
       const raw = query.get("before");
       const result = (await rpc("loveloom_get_messages", {
         p_before: raw ? Number(raw) : null,
-      })) as { messages: Message[]; hasMore: boolean; epoch: number };
+      })) as MessagePage;
       result.messages = await signMessages(result.messages);
       return result;
     }
     const messageId = String(await rpc("loveloom_add_message", {
       p_epoch: Number(data.epoch),
       p_text: String(data.text || ""),
+      p_reply_to: data.replyTo ? String(data.replyTo) : null,
     }));
     await notifyPartnerAboutMessage(cloud(), messageId).catch(() => {});
     return { ok: true, messageId };
@@ -328,6 +330,15 @@ export async function cloudApi(
       p_epoch: Number(data.epoch),
       p_last_seq: Number(data.lastSeq),
     });
+  }
+
+  if (route === "messages/reaction") {
+    await rpc("loveloom_react_message", {
+      p_epoch: Number(data.epoch),
+      p_message_id: String(data.id || ""),
+      p_emoji: String(data.emoji || ""),
+    });
+    return { ok: true };
   }
 
   if (route === "media") {
@@ -376,6 +387,7 @@ export async function cloudApi(
         p_mime: mime,
         p_bytes: file.size,
         p_caption: String(data.caption || ""),
+        p_reply_to: data.replyTo ? String(data.replyTo) : null,
       }));
       if (context === "chat")
         await notifyPartnerAboutMessage(cloud(), registeredId).catch(() => {});
@@ -498,6 +510,72 @@ export type TouchConnection = {
   sendHeart: () => Promise<boolean>;
   close: () => void;
 };
+
+export type RoomSyncKind = "chat" | "read" | "reaction" | "game";
+
+export type RoomSyncConnection = {
+  notify: (kind: RoomSyncKind) => Promise<boolean>;
+  close: () => void;
+};
+
+/**
+ * Realtime carries only an untrusted change hint. Every callback re-reads the
+ * authorized room state through an RPC, so a forged broadcast cannot reveal or
+ * mutate chat data.
+ */
+export function openCloudRoomSync(
+  roomId: string,
+  userId: string,
+  onChange: (kind: RoomSyncKind) => void,
+): RoomSyncConnection {
+  const channel = cloud().channel(`loveloom:sync:${roomId}`, {
+    config: {
+      private: true,
+      broadcast: { self: false, ack: true },
+    },
+  });
+  let ready = false;
+  let closed = false;
+  const pending = new Map<RoomSyncKind, ReturnType<typeof setTimeout>>();
+
+  channel
+    .on("broadcast", { event: "change" }, ({ payload }) => {
+      if (payload?.sender === userId) return;
+      if (!["chat", "read", "reaction", "game"].includes(payload?.kind))
+        return;
+      const kind = payload.kind as RoomSyncKind;
+      if (pending.has(kind)) return;
+      pending.set(
+        kind,
+        setTimeout(() => {
+          pending.delete(kind);
+          if (!closed) onChange(kind);
+        }, 75),
+      );
+    })
+    .subscribe((status) => {
+      ready = status === "SUBSCRIBED";
+    });
+
+  return {
+    async notify(kind) {
+      if (!ready) return false;
+      const result = await channel.send({
+        type: "broadcast",
+        event: "change",
+        payload: { sender: userId, kind, sentAt: Date.now() },
+      });
+      return result === "ok";
+    },
+    close() {
+      closed = true;
+      ready = false;
+      for (const timer of pending.values()) clearTimeout(timer);
+      pending.clear();
+      void cloud().removeChannel(channel);
+    },
+  };
+}
 
 export function openCloudTouch(
   roomId: string,

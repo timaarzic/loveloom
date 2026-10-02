@@ -108,7 +108,9 @@ async function handle(req: Request, ctx: Context) {
     if (mutating) store.limited(`user:${session.id}`, 90, 60000);
     if (
       mutating &&
-      ["messages", "entries", "location", "games", "room"].includes(path) &&
+      (["entries", "location", "games", "room"].includes(path) ||
+        path === "messages" ||
+        path.startsWith("messages/")) &&
       !(path === "room" && ["create", "join"].includes(String(body.action)))
     ) {
       const current = store.requireRoom(session.id, body.epoch);
@@ -155,8 +157,18 @@ async function handle(req: Request, ctx: Context) {
       return reply(store.messages(session.id, before));
     }
     if (path === "messages" && req.method === "POST") {
-      store.addMessage(session.id, body);
-      return reply({ ok: true }, 201);
+      const messageId = store.addMessage(session.id, body);
+      return reply({ ok: true, messageId }, 201);
+    }
+    if (path === "messages/reaction" && req.method === "POST") {
+      store.reactMessage(session.id, body);
+      return reply({ ok: true });
+    }
+    if (path === "messages/unread" && req.method === "POST") {
+      return reply(store.chatUnread(session.id, body));
+    }
+    if (path === "messages/read" && req.method === "POST") {
+      return reply(store.markChatRead(session.id, body));
     }
     if (path === "entries" && req.method === "POST") {
       store.saveEntry(session.id, body);

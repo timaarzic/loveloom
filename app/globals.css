@@ -3716,9 +3716,14 @@ img {
   .games-grid-v6 {
     grid-template-columns: 1fr;
   }
-  .games-grid-v6 .game-card,
-  .game-wheel {
+  .games-grid-v6 .game-card {
     grid-column: 1;
+    min-height: 236px !important;
+  }
+  .moments-grid > .decision-wheel-card {
+    grid-column: 1 / -1;
+    width: 100%;
+    min-width: 0;
     min-height: 236px !important;
   }
   .active-round-action {

@@ -381,6 +381,16 @@ try {
     await b.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
     "Moments mobile layout overflows",
   );
+  assert.equal(
+    await b.evaluate(() => {
+      const grid = document.querySelector(".moments-grid");
+      const wheel = document.querySelector(".decision-wheel-card");
+      if (!grid || !wheel) return false;
+      return wheel.getBoundingClientRect().width >= grid.getBoundingClientRect().width * 0.95;
+    }),
+    true,
+    "Decision wheel must span the moments grid on mobile",
+  );
   await b.screenshot({
     path: join(output, "07-moments-mobile.png"),
     fullPage: true,

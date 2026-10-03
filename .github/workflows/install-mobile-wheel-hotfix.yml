@@ -1,0 +1,35 @@
+name: Install LoveLoom mobile wheel hotfix
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - release-mobile-wheel-hotfix.b64
+
+permissions:
+  contents: write
+
+jobs:
+  install:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Verify and install hotfix
+        shell: bash
+        run: |
+          base64 --decode release-mobile-wheel-hotfix.b64 > /tmp/loveloom-mobile-wheel-hotfix.tar.gz
+          echo "c4fa3906dd1e314e979e9231b2c51bc5e81a5ae10fa7d9ee98742d5f2a733210  /tmp/loveloom-mobile-wheel-hotfix.tar.gz" | sha256sum --check --strict
+          tar -xzf /tmp/loveloom-mobile-wheel-hotfix.tar.gz
+          rm release-mobile-wheel-hotfix.b64
+          rm .github/workflows/install-mobile-wheel-hotfix.yml
+      - name: Publish hotfix commit
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "fix: restore mobile decision wheel width"
+          git push origin main

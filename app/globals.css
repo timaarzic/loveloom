@@ -1459,6 +1459,10 @@ img {
   display: flex;
   align-items: center;
   justify-content: center;
+  transition:
+    transform 0.22s cubic-bezier(0.2, 0.8, 0.2, 1),
+    filter 0.22s ease,
+    box-shadow 0.22s ease;
 }
 .chat-footnote {
   text-align: center;
@@ -2742,6 +2746,23 @@ img {
   content-visibility: auto;
   contain-intrinsic-size: 84px;
 }
+.message-row.is-sending .message {
+  opacity: 0.82;
+  transform: translateY(2px) scale(0.985);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--rose) 10%, transparent);
+  transition:
+    opacity 0.24s ease,
+    transform 0.24s ease,
+    box-shadow 0.24s ease;
+}
+.message-compose.is-sending {
+  background: color-mix(in srgb, var(--blush) 18%, var(--surface));
+}
+.send-button.is-sending {
+  transform: scale(0.92) rotate(-3deg);
+  filter: saturate(0.82);
+  box-shadow: 0 0 0 7px color-mix(in srgb, var(--rose) 11%, transparent);
+}
 @keyframes message-arrive {
   from {
     opacity: 0;
@@ -2873,6 +2894,9 @@ img {
 }
 .thread-status.is-read {
   color: var(--rose);
+}
+.thread-status.is-sending {
+  color: color-mix(in srgb, var(--rose) 72%, var(--muted));
 }
 .message-reactions {
   display: flex;
@@ -3484,6 +3508,12 @@ img {
   color: #f8c9d3;
   box-shadow: 0 8px 25px #37172445;
   transform: translate(-50%, -50%);
+}
+.fortune-wheel > .wheel-center img {
+  width: 76%;
+  height: 76%;
+  object-fit: contain;
+  filter: drop-shadow(0 3px 5px #32101d35);
 }
 .wheel-spin {
   min-width: 220px;

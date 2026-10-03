@@ -344,6 +344,16 @@ try {
   await a.getByText("Виртуальный сад", { exact: true }).waitFor();
   await a.getByText("Общий фотоальбом", { exact: true }).waitFor();
   await a.getByText("Капсула времени", { exact: true }).waitFor();
+  await a.getByRole("button", { name: /Колесо решений/ }).waitFor();
+  assert.equal(
+    await a.evaluate(() => {
+      const capsule = document.querySelector(".capsule-card");
+      const wheel = document.querySelector(".decision-wheel-card");
+      return capsule?.nextElementSibling === wheel;
+    }),
+    true,
+    "Decision wheel must follow the time capsule",
+  );
   await a.getByRole("button", { name: "Отправить тактильное сердце" }).waitFor();
   assert.match(
     await a
@@ -420,6 +430,10 @@ try {
     .getByRole("button", { name: /Колесо решений/ })
     .click();
   await a.getByRole("dialog", { name: "Колесо решений" }).waitFor();
+  assert.match(
+    await a.locator(".wheel-center img").getAttribute("src"),
+    /loveloom-mark\.png/,
+  );
   for (const option of ["Музей", "Пикник", "Поездка", "Концерт"]) {
     await a.getByRole("button", { name: "Добавить вариант" }).click();
     await a.locator(".wheel-option-list input").last().fill(option);
@@ -432,6 +446,23 @@ try {
   await a.getByRole("button", { name: "Крутить колесо" }).click();
   await a.locator(".wheel-result-screen").waitFor({ timeout: 6000 });
   assert.equal(await a.locator(".confetti-field i").count(), 36);
+  const wheelWinner = await a.evaluate(() => {
+    const wheel = document.querySelector(".fortune-wheel");
+    const rotation = Number(
+      wheel?.getAttribute("style")?.match(/rotate\(([-\d.]+)deg\)/)?.[1] || 0,
+    );
+    const options = Array.from(
+      document.querySelectorAll(".fortune-wheel > span > b"),
+      (element) => element.textContent || "",
+    );
+    const normalized = ((360 - rotation) % 360 + 360) % 360;
+    const expected = options[Math.min(options.length - 1, Math.floor(normalized / (360 / options.length)))];
+    return {
+      expected,
+      result: document.querySelector(".wheel-result-screen > strong")?.textContent || "",
+    };
+  });
+  assert.equal(wheelWinner.result, wheelWinner.expected);
   await a.screenshot({
     path: join(output, "10-wheel-winner-desktop.png"),
     fullPage: false,
@@ -441,7 +472,7 @@ try {
     .getByRole("button", { name: "Отличный выбор" })
     .click();
   console.log(
-    "PASS: full-screen game flow synchronizes both answers; wheel accepts eight options and reveals an animated winner.",
+    "PASS: full-screen game flow synchronizes both answers; wheel follows the capsule, uses the LoveLoom mark and reveals the option under the pointer.",
   );
   await a.getByRole("button", { name: "Настройки", exact: true }).first().click();
   await a.getByRole("button", { name: "Выбрать", exact: true }).click();

@@ -328,6 +328,7 @@ export default function LoveLoom({
   const [pendingEmail, setPendingEmail] = useState(""),
     [wallpaper, setWallpaper] = useState<Wallpaper>("rose-mist"),
     [recording, setRecording] = useState(false),
+    [sendingMessage, setSendingMessage] = useState(false),
     [pushState, setPushState] = useState<PushState>("checking");
   const [unreadMessages, setUnreadMessages] = useState(0),
     [locationPermission, setLocationPermission] =
@@ -580,7 +581,7 @@ export default function LoveLoom({
           return;
         setMessages((old) => {
           const byId = new Map(
-            [...old, ...result.messages].map((message) => [message.seq, message]),
+            [...old, ...result.messages].map((message) => [message.id, message]),
           );
           return [...byId.values()].sort((a, b) => a.seq - b.seq);
         });
@@ -949,6 +950,76 @@ export default function LoveLoom({
     if (message.media?.kind === "video") return "Видео";
     if (message.media?.kind === "audio") return "Голосовое сообщение";
     return "Сообщение";
+  }
+
+  async function sendTextMessage(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!room || !user || offline || sendingMessage) return;
+    const text = messageText.trim();
+    if (!text) return;
+
+    const replyTarget = replyingTo;
+    const optimisticId = `sending-${crypto.randomUUID()}`;
+    const optimisticMessage: Message = {
+      seq: Math.max(0, ...messages.map((message) => message.seq)) + 1,
+      id: optimisticId,
+      author: user.id,
+      text,
+      created: Date.now(),
+      pending: true,
+      reply: replyTarget
+        ? {
+            id: replyTarget.id,
+            author: replyTarget.author,
+            text: replyTarget.text,
+            mediaKind: replyTarget.media?.kind || null,
+          }
+        : null,
+      reactions: [],
+    };
+
+    setSendingMessage(true);
+    setMessageText("");
+    setReplyingTo(null);
+    setMessages((old) => [...old, optimisticMessage]);
+    stick.current = true;
+
+    try {
+      const result = await api("messages", {
+        text,
+        replyTo: replyTarget?.id || null,
+        epoch: room.epoch,
+      });
+      const serverId = String(result?.messageId || "");
+      if (serverId) {
+        setMessages((old) =>
+          old.map((message) =>
+            message.id === optimisticId
+              ? { ...message, id: serverId, pending: false }
+              : message,
+          ),
+        );
+      }
+      await fetchMessages(true);
+      if (!serverId)
+        setMessages((old) =>
+          old.filter((message) => message.id !== optimisticId),
+        );
+      void roomSync.current?.notify("chat");
+    } catch (error) {
+      setMessages((old) =>
+        old.filter((message) => message.id !== optimisticId),
+      );
+      setMessageText((current) => current || text);
+      setReplyingTo((current) => current || replyTarget);
+      tell(
+        error instanceof Error
+          ? error.message
+          : "Не удалось отправить сообщение.",
+      );
+    } finally {
+      setSendingMessage(false);
+    }
   }
 
   async function finishVoiceRecording() {
@@ -1937,12 +2008,14 @@ export default function LoveLoom({
                     ) : (
                       messages.map((message, index) => {
                         const mine = message.author === user.id;
-                        const readByPartner = mine && message.seq <= partnerReadSeq;
+                        const pending = Boolean(message.pending);
+                        const readByPartner =
+                          mine && !pending && message.seq <= partnerReadSeq;
                         return (
                           <div
                             key={message.id}
                             id={`message-${message.id}`}
-                            className={`message-row ${mine ? "mine" : ""} ${highlightedMessage === message.id ? "is-highlighted" : ""}`}
+                            className={`message-row ${mine ? "mine" : ""} ${pending ? "is-sending" : ""} ${highlightedMessage === message.id ? "is-highlighted" : ""}`}
                           >
                             {(index === 0 ||
                               new Date(message.created).toDateString() !==
@@ -1952,29 +2025,31 @@ export default function LoveLoom({
                               </span>
                             )}
                             <div className="message-cluster">
-                              <div className="message-actions" aria-label="Действия с сообщением">
-                                <button
-                                  type="button"
-                                  onClick={() => beginReply(message)}
-                                  aria-label="Ответить на сообщение"
-                                  title="Ответить"
-                                >
-                                  <Reply size={15} />
-                                </button>
-                                <button
-                                  type="button"
-                                  className={reactionFor === message.id ? "is-active" : ""}
-                                  onClick={() =>
-                                    setReactionFor((current) =>
-                                      current === message.id ? null : message.id,
-                                    )
-                                  }
-                                  aria-label="Добавить реакцию"
-                                  title="Реакция"
-                                >
-                                  <SmilePlus size={15} />
-                                </button>
-                              </div>
+                              {!pending && (
+                                <div className="message-actions" aria-label="Действия с сообщением">
+                                  <button
+                                    type="button"
+                                    onClick={() => beginReply(message)}
+                                    aria-label="Ответить на сообщение"
+                                    title="Ответить"
+                                  >
+                                    <Reply size={15} />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className={reactionFor === message.id ? "is-active" : ""}
+                                    onClick={() =>
+                                      setReactionFor((current) =>
+                                        current === message.id ? null : message.id,
+                                      )
+                                    }
+                                    aria-label="Добавить реакцию"
+                                    title="Реакция"
+                                  >
+                                    <SmilePlus size={15} />
+                                  </button>
+                                </div>
+                              )}
                               <div className="message">
                                 {message.reply && (
                                   <button
@@ -2005,19 +2080,27 @@ export default function LoveLoom({
                                   </time>
                                   {mine && (
                                     <span
-                                      className={`thread-status ${readByPartner ? "is-read" : ""}`}
+                                      className={`thread-status ${pending ? "is-sending" : ""} ${readByPartner ? "is-read" : ""}`}
                                       title={
-                                        readByPartner
+                                        pending
+                                          ? "Ниточка отправляется"
+                                          : readByPartner
                                           ? `Ниточка прочитана: ${partnerName} открыл чат`
                                           : "Ниточка отправлена"
                                       }
                                     >
-                                      {readByPartner ? (
+                                      {pending ? (
+                                        <LoaderCircle className="spin" size={12} />
+                                      ) : readByPartner ? (
                                         <CheckCheck size={13} />
                                       ) : (
                                         <Check size={12} />
                                       )}
-                                      {readByPartner ? "прочитано" : "доставлено"}
+                                      {pending
+                                        ? "отправляется"
+                                        : readByPartner
+                                          ? "прочитано"
+                                          : "доставлено"}
                                     </span>
                                   )}
                                 </div>
@@ -2079,22 +2162,8 @@ export default function LoveLoom({
                       </div>
                     )}
                     <form
-                      className="message-compose"
-                      onSubmit={(event) => {
-                        event.preventDefault();
-                        void act(async () => {
-                          await api("messages", {
-                            text: messageText,
-                            replyTo: replyingTo?.id || null,
-                            epoch: room.epoch,
-                          });
-                          setMessageText("");
-                          setReplyingTo(null);
-                          stick.current = true;
-                          await fetchMessages(true);
-                          void roomSync.current?.notify("chat");
-                        });
-                      }}
+                      className={`message-compose ${sendingMessage ? "is-sending" : ""}`}
+                      onSubmit={(event) => void sendTextMessage(event)}
                     >
                     <input
                       ref={chatMediaInput}
@@ -2111,7 +2180,7 @@ export default function LoveLoom({
                       <button
                         type="button"
                         className="compose-tool"
-                        disabled={busy || offline || recording}
+                        disabled={busy || offline || recording || sendingMessage}
                         onClick={() => chatMediaInput.current?.click()}
                         aria-label="Прикрепить фотографию или видео"
                       >
@@ -2120,7 +2189,7 @@ export default function LoveLoom({
                       <button
                         type="button"
                         className={`compose-tool voice-tool ${recording ? "is-recording" : ""}`}
-                        disabled={busy || offline}
+                        disabled={busy || offline || sendingMessage}
                         onClick={() => void toggleVoiceRecording()}
                         aria-label={
                           recording
@@ -2151,11 +2220,15 @@ export default function LoveLoom({
                       }}
                     />
                     <button
-                      className="send-button"
-                      disabled={busy || !messageText.trim() || offline}
+                      className={`send-button ${sendingMessage ? "is-sending" : ""}`}
+                      disabled={busy || sendingMessage || !messageText.trim() || offline}
                       aria-label="Отправить сообщение"
                     >
-                      <Send size={20} />
+                      {sendingMessage ? (
+                        <LoaderCircle className="spin" size={20} />
+                      ) : (
+                        <Send size={20} />
+                      )}
                     </button>
                     </form>
                   </div>

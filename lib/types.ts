@@ -32,6 +32,7 @@ export type Message = {
   author: string;
   text: string;
   created: number;
+  pending?: boolean;
   media?: MediaItem | null;
   reply?: MessageReply | null;
   reactions?: MessageReaction[];

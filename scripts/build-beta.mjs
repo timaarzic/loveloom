@@ -27,6 +27,7 @@ for (const file of [
   "media.ts",
   "voice.ts",
   "push.ts",
+  "wheel.ts",
 ])
   cpSync(join(root, "lib", file), join(stage, "lib", file));
 for (const file of ["package.json", "tsconfig.json", "next-env.d.ts"])

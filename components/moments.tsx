@@ -29,6 +29,7 @@ import {
 import { openCloudTouch, type TouchConnection } from "@/lib/cloud";
 import { asset } from "@/lib/assets";
 import { gardenProgress } from "@/lib/garden";
+import DecisionWheel from "@/components/decision-wheel";
 import type {
   GardenState,
   MediaItem,
@@ -719,6 +720,7 @@ export default function MomentsHub({
             )}
           </div>
         </section>
+        <DecisionWheel tell={tell} />
       </div>
       <div className="moments-divider">
         <span><Send size={15} /> Ниже остаются ваши мини-игры</span>

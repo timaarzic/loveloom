@@ -1,4 +1,4 @@
-// LoveLoom · 0.9.5 · five private home-screen widgets for Scriptable.
+// LoveLoom · 0.9.6 · five private home-screen widgets for Scriptable.
 // Paste into a script named LoveLoom. Widget parameter = the Russian name below.
 // No AI calls, passwords or account JWTs. The personal capability stays in Keychain.
 const LL_API="https://zolvjfgbkvzyrarwpeel.supabase.co/functions/v1/loveloom-widget";
@@ -67,6 +67,7 @@ async function llMain(){
  const action=args.queryParameters?.action,requested=args.queryParameters?.kind;
  if(action==="pulse"){await llPulse(secret,state,requested);}
  else if(action==="meeting"){await llMeeting(secret,state);}
+ else if(action==="pin"){const selected=LL_KINDS.includes(args.queryParameters?.screen)?args.queryParameters.screen:"days",name=LL_NAMES[LL_KINDS.indexOf(selected)];await llNotice("Главный экран → удерживайте свободное место → добавьте виджет Scriptable. Скрипт: LoveLoom. Параметр: "+name+". iPad и iPhone не разрешают сайту автоматически добавлять системный виджет.");const widget=await llRender(selected,state);await widget.presentMedium();}
  else{
  const menu=new Alert();menu.title="Маленькое рядом";menu.message="Добавьте виджет Scriptable на главный экран. Выберите скрипт LoveLoom, параметр — название виджета. Система обновляет их в своём темпе.";
  LL_NAMES.forEach(name=>menu.addAction(name));menu.addAction("Открыть LoveLoom");menu.addDestructiveAction("Отключить устройство");menu.addCancelAction("Готово");const choice=await menu.presentSheet();

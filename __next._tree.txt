@@ -1,6 +1,6 @@
 :HL["/loveloom/_next/static/chunks/2uizm94qx4cq_.css","style"]
 :HL["/loveloom/_next/static/chunks/0lgeyawwh8_kq.css","style"]
-:HL["/loveloom/_next/static/chunks/25u45h5_8efo0.css","style"]
+:HL["/loveloom/_next/static/chunks/1s84462-8o646.css","style"]
 :HC["/",""]
 1:[["children",{"s":"__PAGE__","h":160}]]
-0:{"b":"xpuH6fjt0pHcylw5IapVP","t":{"t":{"s":"","h":80,"c":"$Q1"}}}
+0:{"b":"xiNQqNkCZ5x7x7YjiaYRp","t":{"t":{"s":"","h":80,"c":"$Q1"}}}
